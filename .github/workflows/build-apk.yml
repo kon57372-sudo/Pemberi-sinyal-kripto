@@ -1,6 +1,7 @@
-name: Buat APK Sinyal HAM
+name: Build HAM Signal APK
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -42,6 +43,7 @@ jobs:
           name: HAM-Signal-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
 
 
 
