@@ -54,9 +54,6 @@ public class MainActivity extends Activity {
     private EditText searchBox;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayList<Coin> coins = new ArrayList<>();
-    private final Map<String, Double> holdings = new HashMap<>();
-    private final Map<String, Double> avgPrices = new HashMap<>();
-    private double cash = 10000.0;
     private String page = "Home";
     private String selectedCoin = "bitcoin";
     private String query = "";
@@ -65,7 +62,7 @@ public class MainActivity extends Activity {
 
     static class Coin {
         String id, name, symbol, image;
-        double price, change, marketCap, volume, high, low;
+        double price, change, change1h, change7d, marketCap, volume, high, low;
         ArrayList<Double> spark = new ArrayList<>();
     }
 
@@ -76,6 +73,19 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(0);
         buildShell();
         fetchMarkets();
+        handler.postDelayed(autoRefresh, 60000);
+    }
+
+    private final Runnable autoRefresh = new Runnable() {
+        @Override public void run() {
+            if (!isFinishing()) fetchMarkets();
+            handler.postDelayed(this, 60000);
+        }
+    };
+
+    @Override protected void onDestroy() {
+        handler.removeCallbacks(autoRefresh);
+        super.onDestroy();
     }
 
     private void buildShell() {
@@ -113,8 +123,8 @@ public class MainActivity extends Activity {
         bottom.setBackgroundColor(PANEL);
         bottom.setPadding(dp(3), dp(7), dp(3), dp(8));
         bottom.setGravity(Gravity.CENTER);
-        String[] labels = {"Home", "Markets", "Scanner", "Trade", "Assets"};
-        String[] icons = {"⌂", "▥", "⌕", "⇄", "◉"};
+        String[] labels = {"Home", "Markets", "Scanner", "Signals"};
+        String[] icons = {"⌂", "▥", "⌕", "⚡"};
         for (int i = 0; i < labels.length; i++) {
             final String name = labels[i];
             LinearLayout item = new LinearLayout(this);
@@ -137,17 +147,16 @@ public class MainActivity extends Activity {
         body.removeAllViews();
         if (name.equals("Home")) renderHome();
         else if (name.equals("Markets")) renderMarkets(false);
-        else if (name.equals("Scanner")) renderMarkets(true);
-        else if (name.equals("Trade")) renderTrade();
-        else renderAssets();
+        else if (name.equals("Scanner") || name.equals("Signals")) renderMarkets(true);
+        else renderMarkets(false);
         rebuildBottom();
     }
 
     private void rebuildBottom() {
         if (bottom == null) return;
         bottom.removeAllViews();
-        String[] labels = {"Home", "Markets", "Scanner", "Trade", "Assets"};
-        String[] icons = {"⌂", "▥", "⌕", "⇄", "◉"};
+        String[] labels = {"Home", "Markets", "Scanner", "Signals"};
+        String[] icons = {"⌂", "▥", "⌕", "⚡"};
         for (int i = 0; i < labels.length; i++) {
             final String name = labels[i];
             LinearLayout item = new LinearLayout(this);
@@ -166,37 +175,37 @@ public class MainActivity extends Activity {
         LinearLayout content = column();
         sc.addView(content);
         body.addView(sc);
-        content.addView(titleBlock("Dashboard", "Ringkasan pasar kripto real-time"));
-        Coin btc = find("bitcoin");
-        Coin eth = find("ethereum");
+        content.addView(titleBlock("HAM Signal Center", "Peringatan momentum awal, breakout, pembalikan, dan tekanan jual"));
+        int pump=0, dump=0, bullish=0, bearish=0;
+        for (Coin c : coins) {
+            int score = signalScore(c);
+            if (score >= 55) pump++;
+            else if (score <= -45) dump++;
+            else if (score >= 25) bullish++;
+            else if (score <= -25) bearish++;
+        }
+        LinearLayout summary = cardColumn();
+        summary.addView(text("PERINGATAN PASAR • " + coins.size() + " ASET", 11, MUTED, true));
+        summary.addView(text(pump + " potensi pump awal  •  " + dump + " potensi dump awal", 16, WHITE, true));
+        summary.addView(text(bullish + " momentum naik  •  " + bearish + " tekanan jual", 12, MUTED, false));
+        LinearLayout actions = new LinearLayout(this);
+        Button scan = actionButton("Pindai semua sinyal", GREEN);
+        scan.setOnClickListener(v -> showPage("Scanner"));
+        Button market = actionButton("Lihat pasar", PANEL2);
+        market.setOnClickListener(v -> showPage("Markets"));
+        actions.addView(scan, new LinearLayout.LayoutParams(0, dp(44), 1));
+        actions.addView(space(dp(8)));
+        actions.addView(market, new LinearLayout.LayoutParams(0, dp(44), 1));
+        summary.addView(actions);
+        content.addView(summary);
 
-        LinearLayout hero = cardColumn();
-        hero.addView(text("TOTAL SALDO SIMULASI", 11, MUTED, true));
-        hero.addView(text("$" + money(totalEquity()), 30, WHITE, true));
-        hero.addView(text("Saldo virtual • bukan uang sungguhan", 11, MUTED, false));
-        LinearLayout row = new LinearLayout(this);
-        row.setPadding(0, dp(15), 0, 0);
-        Button buy = actionButton("Mulai Trading", GREEN);
-        buy.setOnClickListener(v -> showPage("Trade"));
-        Button scanner = actionButton("Buka Scanner", PANEL2);
-        scanner.setOnClickListener(v -> showPage("Scanner"));
-        row.addView(buy, new LinearLayout.LayoutParams(0, dp(44), 1));
-        row.addView(space(dp(8)));
-        row.addView(scanner, new LinearLayout.LayoutParams(0, dp(44), 1));
-        hero.addView(row);
-        content.addView(hero);
-
-        content.addView(sectionHeader("Pasar utama", "Lihat semua", () -> showPage("Markets")));
-        if (btc != null) content.addView(coinRow(btc, true));
-        if (eth != null) content.addView(coinRow(eth, true));
-
-        content.addView(sectionHeader("Peluang scanner", "Semua sinyal", () -> showPage("Scanner")));
+        content.addView(sectionHeader("Peringatan paling kuat", "Semua sinyal", () -> showPage("Scanner")));
         ArrayList<Coin> ranked = new ArrayList<>(coins);
-        ranked.sort((a,b) -> Double.compare(b.change, a.change));
-        int count = Math.min(5, ranked.size());
+        ranked.sort((a,b) -> Integer.compare(Math.abs(signalScore(b)), Math.abs(signalScore(a))));
+        int count = Math.min(8, ranked.size());
         for (int i=0; i<count; i++) content.addView(signalRow(ranked.get(i)));
-
-        content.addView(cardNote("Catatan", "Sinyal dihitung sederhana dari perubahan harga 24 jam dan data pasar. Ini bukan saran investasi dan tidak menjamin hasil."));
+        content.addView(cardNote("Indikator aktif",
+                "Perubahan 1j/24j/7h, RSI, EMA 9/21, MACD perkiraan, posisi Bollinger, volatilitas sampel, jarak dari high 7 hari, volume/market cap, momentum, dan skor gabungan. Refresh otomatis tiap 60 detik; tekan ↻ untuk memperbarui sekarang. Tidak ada indikator yang dapat memastikan pump/dump lebih awal."));
     }
 
     private void renderMarkets(boolean scanner) {
@@ -205,7 +214,7 @@ public class MainActivity extends Activity {
         sc.addView(content);
         body.addView(sc);
         content.addView(titleBlock(scanner ? "Coin Scanner" : "Pasar Kripto",
-                scanner ? "Peringkat peluang berdasarkan perubahan 24 jam" : "Harga, volume, kapitalisasi pasar"));
+                scanner ? "Peringatan dini momentum dan risiko • urut kekuatan sinyal" : "Harga, volume, kapitalisasi pasar"));
         searchBox = new EditText(this);
         searchBox.setSingleLine(true);
         searchBox.setTextColor(WHITE);
@@ -243,7 +252,7 @@ public class MainActivity extends Activity {
                     c.symbol.toLowerCase(Locale.US).contains(query))) continue;
             shown.add(c);
         }
-        if (scanner) shown.sort((a,b) -> Double.compare(b.change, a.change));
+        if (scanner) shown.sort((a,b) -> Integer.compare(Math.abs(signalScore(b)), Math.abs(signalScore(a))));
         if (shown.isEmpty()) {
             list.addView(cardNote("Data sedang dimuat", "Tekan tombol ↻ di bagian atas untuk mengambil data pasar."));
             return;
@@ -258,11 +267,11 @@ public class MainActivity extends Activity {
         LinearLayout content = column();
         sc.addView(content);
         body.addView(sc);
-        content.addView(titleBlock(c.name + " (" + c.symbol.toUpperCase(Locale.US) + ")", "Detail aset • data 24 jam"));
+        content.addView(titleBlock(c.name + " (" + c.symbol.toUpperCase(Locale.US) + ")", "Detail aset • pembaruan pasar otomatis"));
         LinearLayout priceCard = cardColumn();
         priceCard.addView(text("$" + price(c.price), 29, WHITE, true));
-        priceCard.addView(text((c.change >= 0 ? "+" : "") + pct(c.change) + "% dalam 24 jam",
-                13, c.change >= 0 ? GREEN : RED, true));
+        priceCard.addView(text("1 jam " + signedPct(c.change1h) + "%   •   24 jam " + signedPct(c.change) + "%   •   7 hari " + signedPct(c.change7d) + "%",
+                12, c.change >= 0 ? GREEN : RED, true));
         priceCard.addView(new SparkChart(c.spark, c.change >= 0 ? GREEN : RED), new LinearLayout.LayoutParams(-1, dp(150)));
         content.addView(priceCard);
         LinearLayout stats = new LinearLayout(this);
@@ -275,115 +284,20 @@ public class MainActivity extends Activity {
         stats2.addView(space(dp(8)));
         stats2.addView(statCard("Terendah 24j", "$" + price(c.low)), new LinearLayout.LayoutParams(0, -2, 1));
         content.addView(stats2);
-        content.addView(sectionHeader("Sinyal HAM", null, null));
-        String signal = c.change > 3 ? "MOMENTUM NAIK" : c.change < -3 ? "TEKANAN JUAL" : "NETRAL / TUNGGU";
-        int color = c.change > 3 ? GREEN : c.change < -3 ? RED : MUTED;
-        content.addView(cardNote(signal, "Perubahan 24 jam: " + pct(c.change) + "%. Gunakan indikator ini sebagai informasi awal, bukan kepastian arah harga."));
-        LinearLayout buttons = new LinearLayout(this);
-        Button buy = actionButton("Beli Simulasi", GREEN);
-        Button sell = actionButton("Jual Simulasi", RED);
-        buy.setOnClickListener(v -> tradeDialog(c, true));
-        sell.setOnClickListener(v -> tradeDialog(c, false));
-        buttons.addView(buy, new LinearLayout.LayoutParams(0, dp(46), 1));
-        buttons.addView(space(dp(8)));
-        buttons.addView(sell, new LinearLayout.LayoutParams(0, dp(46), 1));
-        content.addView(buttons);
+        content.addView(sectionHeader("Analisis sinyal HAM", null, null));
+        int score = signalScore(c);
+        content.addView(cardNote(signalLabel(c), "Skor arah: " + (score > 0 ? "+" : "") + score +
+                "/100 • Kualitas setup: " + setupQuality(c) + ". Peringatan dini berbasis data pasar; bukan prediksi pasti."));
+        addIndicatorPair(content, "RSI (perkiraan)", String.valueOf((int)rsi(c.spark)), "Momentum pendek", signedPct(shortMomentum(c.spark)) + "%");
+        addIndicatorPair(content, "EMA 9 vs EMA 21", emaTrendLabel(c.spark), "MACD (perkiraan)", macdLabel(c.spark));
+        addIndicatorPair(content, "Bollinger position", bandPosition(c.spark), "Volatilitas sampel", pct(volatility(c.spark)) + "%");
+        addIndicatorPair(content, "Posisi dari high 7h", pct(distanceFromHigh(c.spark)) + "%", "Volume / market cap", pct(c.marketCap > 0 ? c.volume / c.marketCap * 100 : 0) + "%");
+        addIndicatorPair(content, "Perubahan 1 jam", signedPct(c.change1h) + "%", "Perubahan 7 hari", signedPct(c.change7d) + "%");
+        content.addView(cardNote("Cara membaca peringatan",
+                "Breakout watch = harga mendekati puncak sampel; momentum awal = kenaikan mulai menguat; risiko pembalikan = kenaikan terlalu tajam atau RSI tinggi; tekanan turun = momentum dan tren melemah. Data historis 7 hari bukan order book atau transaksi real-time, jadi sinyal bisa terlambat."));
         Button back = actionButton("← Kembali ke pasar", PANEL2);
         back.setOnClickListener(v -> showPage("Markets"));
         content.addView(back);
-    }
-
-    private void renderTrade() {
-        ScrollView sc = scroll();
-        LinearLayout content = column();
-        sc.addView(content);
-        body.addView(sc);
-        content.addView(titleBlock("Paper Trading", "Latihan beli/jual dengan saldo virtual"));
-        LinearLayout balance = cardColumn();
-        balance.addView(text("SALDO TERSEDIA", 11, MUTED, true));
-        balance.addView(text("$" + money(cash), 29, WHITE, true));
-        balance.addView(text("Total nilai akun: $" + money(totalEquity()), 12, GREEN, true));
-        content.addView(balance);
-        content.addView(sectionHeader("Pilih aset", null, null));
-        for (Coin c : coins) {
-            if (holdings.getOrDefault(c.id, 0.0) > 0 || c.id.equals("bitcoin") || c.id.equals("ethereum")) {
-                LinearLayout r = coinRow(c, false);
-                r.setOnClickListener(v -> { selectedCoin = c.id; tradeDialog(c, true); });
-                content.addView(r);
-            }
-        }
-        content.addView(cardNote("Cara kerja", "Pilih koin lalu masukkan nilai USD untuk membeli. Penjualan mengurangi jumlah aset virtual. Tidak ada order yang dikirim ke bursa."));
-    }
-
-    private void renderAssets() {
-        ScrollView sc = scroll();
-        LinearLayout content = column();
-        sc.addView(content);
-        body.addView(sc);
-        content.addView(titleBlock("Aset Saya", "Portofolio simulasi"));
-        content.addView(cardNote("Nilai akun", "$" + money(totalEquity()) + " • Saldo tunai $" + money(cash)));
-        boolean any = false;
-        for (Coin c : coins) {
-            double qty = holdings.getOrDefault(c.id, 0.0);
-            if (qty <= 0) continue;
-            any = true;
-            LinearLayout card = cardColumn();
-            LinearLayout r = new LinearLayout(this);
-            r.setGravity(Gravity.CENTER_VERTICAL);
-            LinearLayout names = column();
-            names.addView(text(c.name, 15, WHITE, true));
-            names.addView(text(qty + " " + c.symbol.toUpperCase(Locale.US), 11, MUTED, false));
-            r.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
-            r.addView(text("$" + money(qty*c.price), 15, WHITE, true));
-            card.addView(r);
-            content.addView(card);
-        }
-        if (!any) content.addView(cardNote("Belum ada aset", "Buka menu Trade untuk mencoba transaksi simulasi."));
-        Button reset = actionButton("Reset portofolio simulasi", PANEL2);
-        reset.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("Reset simulasi?")
-                .setMessage("Saldo kembali ke $10.000 dan semua aset simulasi dihapus.")
-                .setNegativeButton("Batal", null).setPositiveButton("Reset", (d,w) -> {
-                    cash = 10000; holdings.clear(); avgPrices.clear(); showPage("Assets");
-                }).show());
-        content.addView(reset);
-    }
-
-    private void tradeDialog(Coin c, boolean buy) {
-        EditText input = new EditText(this);
-        input.setInputType(8194);
-        input.setSingleLine(true);
-        input.setText("100");
-        input.setHint("Nilai USD");
-        new AlertDialog.Builder(this)
-                .setTitle((buy ? "Beli " : "Jual ") + c.symbol.toUpperCase(Locale.US) + " (simulasi)")
-                .setMessage("Harga saat ini: $" + price(c.price) + "\nMasukkan nilai transaksi dalam USD.")
-                .setView(input)
-                .setNegativeButton("Batal", null)
-                .setPositiveButton(buy ? "Beli" : "Jual", (d,w) -> {
-                    double amount;
-                    try { amount = Double.parseDouble(input.getText().toString().trim()); }
-                    catch (Exception e) { toast("Masukkan angka yang benar"); return; }
-                    if (amount <= 0 || c.price <= 0) { toast("Nilai transaksi tidak valid"); return; }
-                    double qty = amount / c.price;
-                    double owned = holdings.getOrDefault(c.id, 0.0);
-                    if (buy) {
-                        if (amount > cash) { toast("Saldo virtual tidak cukup"); return; }
-                        double oldCost = avgPrices.getOrDefault(c.id, c.price) * owned;
-                        cash -= amount;
-                        holdings.put(c.id, owned + qty);
-                        avgPrices.put(c.id, (oldCost + amount) / (owned + qty));
-                        toast("Beli simulasi berhasil");
-                    } else {
-                        if (owned <= 0) { toast("Kamu belum memiliki aset ini"); return; }
-                        double sellQty = Math.min(qty, owned);
-                        cash += sellQty * c.price;
-                        double remaining = owned - sellQty;
-                        if (remaining < 1e-12) { holdings.remove(c.id); avgPrices.remove(c.id); }
-                        else holdings.put(c.id, remaining);
-                        toast("Jual simulasi berhasil");
-                    }
-                    showPage(page);
-                }).show();
     }
 
     private LinearLayout coinRow(Coin c, boolean compactRow) {
@@ -418,11 +332,151 @@ public class MainActivity extends Activity {
 
     private LinearLayout signalRow(Coin c) {
         LinearLayout card = coinRow(c, false);
-        TextView tag = text(c.change > 3 ? "▲ MOMENTUM" : c.change < -3 ? "▼ TEKANAN JUAL" : "• NETRAL / TUNGGU",
-                10, c.change > 3 ? GREEN : c.change < -3 ? RED : MUTED, true);
-        tag.setPadding(dp(48), dp(3), 0, 0);
+        int score = signalScore(c);
+        int color = score >= 25 ? GREEN : score <= -25 ? RED : MUTED;
+        TextView tag = text(signalLabel(c) + "  •  SKOR " + (score > 0 ? "+" : "") + score,
+                10, color, true);
+        tag.setPadding(dp(48), dp(4), 0, dp(2));
         card.addView(tag);
+        TextView metrics = text("1j " + signedPct(c.change1h) + "% | RSI " + (int)rsi(c.spark) +
+                " | Momen " + signedPct(shortMomentum(c.spark)) + "% | Tren " + signedPct(c.change7d) + "%",
+                10, MUTED, false);
+        metrics.setPadding(dp(48), 0, 0, 0);
+        card.addView(metrics);
         return card;
+    }
+
+    private String signalLabel(Coin c) {
+        int score = signalScore(c);
+        double r = rsi(c.spark);
+        double mom = shortMomentum(c.spark);
+        double volRatio = c.marketCap > 0 ? c.volume / c.marketCap : 0;
+        if (score >= 65 && mom > 0 && c.change1h > 0) return "MOMENTUM AWAL KUAT";
+        if (score <= -60 && mom < 0 && c.change1h < 0) return "RISIKO DUMP TINGGI";
+        if (nearHigh(c.spark) && mom > 0 && c.change1h > 0) return "BREAKOUT WATCH";
+        if (r <= 32 && mom > 0 && c.change1h > 0) return "POTENSI PANTULAN";
+        if (r >= 72 && c.change > 5) return "RISIKO PEMBALIKAN / PUMP";
+        if (volRatio > 0.10 && Math.abs(c.change) > 2) return "AKTIVITAS VOLUME TINGGI";
+        if (score >= 30) return "MOMENTUM NAIK";
+        if (score <= -30) return "TEKANAN JUAL";
+        if (r >= 68) return "RSI TINGGI • WASPADA";
+        if (r <= 32) return "RSI RENDAH • PANTAU";
+        return "NETRAL • MENUNGGU KONFIRMASI";
+    }
+
+    // Approximate indicator calculations from the available 7-day price samples.
+    private double sevenDayTrend(ArrayList<Double> p) {
+        if (p == null || p.size() < 2 || p.get(0) == 0) return 0;
+        return (p.get(p.size()-1) / p.get(0) - 1) * 100;
+    }
+
+    private double shortMomentum(ArrayList<Double> p) {
+        if (p == null || p.size() < 6) return 0;
+        int n = p.size();
+        double old = p.get(Math.max(0, n - Math.max(4, n/5) - 1));
+        double now = p.get(n-1);
+        if (old == 0) return 0;
+        return (now / old - 1) * 100;
+    }
+
+    private double rsi(ArrayList<Double> p) {
+        if (p == null || p.size() < 3) return 50;
+        int start = Math.max(1, p.size()-15);
+        double gain=0, loss=0; int count=0;
+        for (int i=start; i<p.size(); i++) {
+            double d = p.get(i)-p.get(i-1);
+            if (d > 0) gain += d; else loss -= d;
+            count++;
+        }
+        if (count == 0) return 50;
+        if (loss == 0) return gain == 0 ? 50 : 100;
+        double rs = (gain/count)/(loss/count);
+        return 100 - (100/(1+rs));
+    }
+
+    private int signalScore(Coin c) {
+        int score = 0;
+        double mom = shortMomentum(c.spark), trend = sevenDayTrend(c.spark), r = rsi(c.spark);
+        double volRatio = c.marketCap > 0 ? c.volume / c.marketCap : 0;
+        double distanceHigh = distanceFromHigh(c.spark);
+        if (c.change1h >= 1.0) score += 16; else if (c.change1h >= 0.25) score += 8;
+        else if (c.change1h <= -1.0) score -= 16; else if (c.change1h <= -0.25) score -= 8;
+        if (mom >= 1.5) score += 20; else if (mom >= 0.4) score += 10;
+        else if (mom <= -1.5) score -= 20; else if (mom <= -0.4) score -= 10;
+        if (c.change >= 5) score += 12; else if (c.change >= 1.5) score += 6;
+        else if (c.change <= -5) score -= 12; else if (c.change <= -1.5) score -= 6;
+        if (c.change7d >= 10 || trend >= 8) score += 10; else if (c.change7d >= 2 || trend >= 2) score += 5;
+        else if (c.change7d <= -10 || trend <= -8) score -= 10; else if (c.change7d <= -2 || trend <= -2) score -= 5;
+        if (r >= 78) score -= 12; else if (r >= 55 && mom > 0) score += 7;
+        else if (r <= 25 && mom < 0) score -= 5; else if (r <= 35 && mom > 0) score += 6;
+        if (volRatio >= 0.15) score += mom >= 0 ? 9 : -9;
+        else if (volRatio >= 0.05) score += mom >= 0 ? 4 : -4;
+        if (nearHigh(c.spark) && mom > 0 && c.change1h > 0) score += 8;
+        if (volatility(c.spark) > 12) score -= 5;
+        if (Math.abs(c.change) >= 15) score += c.change > 0 ? -10 : 5;
+        return Math.max(-100, Math.min(100, score));
+    }
+
+    private void addIndicatorPair(LinearLayout target, String a, String av, String b, String bv) {
+        LinearLayout row = new LinearLayout(this);
+        row.addView(statCard(a, av), new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(space(dp(7)));
+        row.addView(statCard(b, bv), new LinearLayout.LayoutParams(0, -2, 1));
+        target.addView(row);
+    }
+
+    private String setupQuality(Coin c) {
+        int s = Math.abs(signalScore(c));
+        if (s >= 70) return "kuat, tetap berisiko";
+        if (s >= 45) return "menengah";
+        if (s >= 25) return "awal / lemah";
+        return "belum terkonfirmasi";
+    }
+
+    private double ema(ArrayList<Double> p, int period) {
+        if (p == null || p.isEmpty()) return 0;
+        double k = 2.0 / (period + 1.0), e = p.get(0);
+        for (int i = 1; i < p.size(); i++) e = p.get(i) * k + e * (1-k);
+        return e;
+    }
+    private String emaTrendLabel(ArrayList<Double> p) {
+        if (p == null || p.size() < 22) return "Data kurang";
+        double e9 = ema(new ArrayList<>(p.subList(Math.max(0,p.size()-30), p.size())), 9);
+        double e21 = ema(new ArrayList<>(p.subList(Math.max(0,p.size()-60), p.size())), 21);
+        return e9 > e21 ? "Naik" : e9 < e21 ? "Turun" : "Datar";
+    }
+    private String macdLabel(ArrayList<Double> p) {
+        if (p == null || p.size() < 26) return "Data kurang";
+        double fast = ema(new ArrayList<>(p.subList(Math.max(0,p.size()-26),p.size())), 12);
+        double slow = ema(new ArrayList<>(p.subList(Math.max(0,p.size()-50),p.size())), 26);
+        return fast > slow ? "Bullish" : fast < slow ? "Bearish" : "Netral";
+    }
+    private String bandPosition(ArrayList<Double> p) {
+        if (p == null || p.size() < 10) return "Data kurang";
+        int from = Math.max(0,p.size()-20); double mean=0;
+        for(int i=from;i<p.size();i++) mean += p.get(i);
+        mean /= (p.size()-from); double var=0;
+        for(int i=from;i<p.size();i++) var += Math.pow(p.get(i)-mean,2);
+        double sd=Math.sqrt(var/(p.size()-from));
+        double lo=mean-2*sd, hi=mean+2*sd, now=p.get(p.size()-1);
+        if (hi==lo) return "Tengah";
+        double pos=(now-lo)/(hi-lo);
+        if(pos>0.9) return "Dekat atas";
+        if(pos<0.1) return "Dekat bawah";
+        return "Tengah";
+    }
+    private double volatility(ArrayList<Double> p) {
+        if (p == null || p.size() < 3) return 0;
+        double sum=0; int n=0;
+        int from=Math.max(1,p.size()-24);
+        for(int i=from;i<p.size();i++) if(p.get(i-1)!=0) { sum += Math.abs((p.get(i)/p.get(i-1)-1)*100); n++; }
+        return n==0?0:sum/n;
+    }
+    private boolean nearHigh(ArrayList<Double> p) { return distanceFromHigh(p) >= -3.0; }
+    private double distanceFromHigh(ArrayList<Double> p) {
+        if (p == null || p.size()<2) return 0;
+        double high=0; for(double v:p) high=Math.max(high,v);
+        return high<=0?0:(p.get(p.size()-1)/high-1)*100;
     }
 
     private View titleBlock(String title, String subtitle) {
@@ -482,7 +536,7 @@ public class MainActivity extends Activity {
             String error = null;
             HttpURLConnection conn = null;
             try {
-                URL url = new URL("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=24h");
+                URL url = new URL("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=1h%2C24h%2C7d");
                 conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setConnectTimeout(12000);
@@ -506,6 +560,8 @@ public class MainActivity extends Activity {
                     c.image = o.optString("image");
                     c.price = o.optDouble("current_price", 0);
                     c.change = o.optDouble("price_change_percentage_24h", 0);
+                    c.change1h = o.optDouble("price_change_percentage_1h_in_currency", 0);
+                    c.change7d = o.optDouble("price_change_percentage_7d_in_currency", 0);
                     c.marketCap = o.optDouble("market_cap", 0);
                     c.volume = o.optDouble("total_volume", 0);
                     c.high = o.optDouble("high_24h", c.price);
@@ -526,7 +582,7 @@ public class MainActivity extends Activity {
                 if (!result.isEmpty()) {
                     coins.clear();
                     coins.addAll(result);
-                    status.setText("LIVE • CoinGecko • " + coins.size() + " aset • diperbarui saat refresh");
+                    status.setText("LIVE • CoinGecko • " + coins.size() + " aset • refresh otomatis tiap 60 detik");
                     showPage(page);
                 } else {
                     status.setText("Data gagal dimuat • " + (err == null ? "periksa koneksi" : err));
@@ -546,12 +602,6 @@ public class MainActivity extends Activity {
     private Coin find(String id) {
         for (Coin c : coins) if (c.id.equals(id)) return c;
         return null;
-    }
-
-    private double totalEquity() {
-        double total = cash;
-        for (Coin c : coins) total += holdings.getOrDefault(c.id, 0.0) * c.price;
-        return total;
     }
 
     private ScrollView scroll() {
@@ -616,6 +666,7 @@ public class MainActivity extends Activity {
     private int dp(float v) { return (int)(getResources().getDisplayMetrics().density * v + 0.5f); }
     private String money(double v) { return new DecimalFormat("#,##0.00").format(v); }
     private String pct(double v) { return new DecimalFormat("0.00").format(v); }
+    private String signedPct(double v) { return (v > 0 ? "+" : "") + pct(v); }
     private String price(double v) {
         if (v >= 1000) return new DecimalFormat("#,##0.00").format(v);
         if (v >= 1) return new DecimalFormat("0.0000").format(v);
@@ -645,7 +696,7 @@ public class MainActivity extends Activity {
             super.onDraw(canvas);
             if (points.size() < 2) {
                 p.setColor(MUTED); p.setTextSize(dp(12));
-                canvas.drawText("Grafik 7 hari tidak tersedia", dp(8), getHeight()/2f, p);
+                canvas.drawText("Grafik harga 7 hari tidak tersedia", dp(8), getHeight()/2f, p);
                 return;
             }
             double min = Double.MAX_VALUE, max = -Double.MAX_VALUE;
@@ -664,4 +715,4 @@ public class MainActivity extends Activity {
             p.setStyle(Paint.Style.FILL);
         }
     }
-                                    }
+}
