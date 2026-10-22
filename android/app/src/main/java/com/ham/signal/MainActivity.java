@@ -54,10 +54,15 @@ public class MainActivity extends Activity {
         fetchMarkets();
         handler.postDelayed(refresh,60000);
     }
-       Runnable refresh=()->{
-        if(!isFinishing())fetchMarkets();
-        handler.postDelayed(refresh,60000);
-    
+       Runnable refresh = new Runnable() {
+    @Override
+    public void run() {
+        if (!isFinishing()) {
+            fetchMarkets();
+            handler.postDelayed(this, 60000);
+        }
+    }
+};
     };
 
     @Override protected void onDestroy(){
