@@ -43,52 +43,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override public void onCreate(Bundle b){
-        super.onCreate(b);
-        getWindow().setStatusBarColor(BG);
-        getWindow().setNavigationBarColor(BG);
-        prefs=getSharedPreferences("ham_account",MODE_PRIVATE);
-        cash=Double.longBitsToDouble(prefs.getLong("cash",Double.doubleToLongBits(150000000000.0)));
-        loadAccount();
-        buildShell();
-        fetchMarkets();
-        handler.postDelayed(refresh,60000);
-    }
-       Runnable refresh = new Runnable() {
-    @Override
-    public void run() {
-        if (!isFinishing()) {
-            fetchMarkets();
-            handler.postDelayed(this, 60000);
-        }
-    }
-};
-    };
-
-    @Override protected void onDestroy(){
-        handler.removeCallbacks(refresh);
-        super.onDestroy();
-    }
-
-    void saveAccount(){
-        JSONObject h=new JSONObject();
-        try{
-            for(String k:holdings.keySet())h.put(k,holdings.get(k));
-        }catch(Exception ignored){}
-        JSONArray a=new JSONArray();
-        for(Tx t:history){
-            JSONObject o=new JSONObject();
-            try{
-                o.put("s",t.symbol);o.put("a",t.side);o.put("q",t.qty);
-                o.put("p",t.price);o.put("v",t.total);o.put("t",t.time);
-                a.put(o);
-            }catch(Exception ignored){}
-        }
-        prefs.edit().putLong("cash",Double.doubleToLongBits(cash))
-            .putString("holdings",h.toString())
-            .putString("history",a.toString()).apply();
-    }
-
+    
     void loadAccount(){
         try{
             JSONObject h=new JSONObject(prefs.getString("holdings","{}"));
@@ -106,7 +61,60 @@ public class MainActivity extends Activity {
             }
         }catch(Exception ignored){}
     }
+@Override public void onCreate(Bundle b){
+        super.onCreate(b);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
+        prefs=getSharedPreferences("ham_account",MODE_PRIVATE);
+        cash=Double.longBitsToDouble(
+            prefs.getLong("cash",
+            Double.doubleToLongBits(150000000000.0))
+        );
+        loadAccount();
+        buildShell();
+        fetchMarkets();
+        handler.postDelayed(refresh,60000);
+    }
 
+    Runnable refresh = new Runnable() {
+        @Override
+        public void run() {
+            if (!isFinishing()) {
+                fetchMarkets();
+                handler.postDelayed(this, 60000);
+            }
+        }
+    };
+
+    @Override protected void onDestroy(){
+        handler.removeCallbacks(refresh);
+        super.onDestroy();
+    }
+
+    void saveAccount(){
+        JSONObject h=new JSONObject();
+        try{
+            for(String k:holdings.keySet())h.put(k,holdings.get(k));
+        }catch(Exception ignored){}
+        JSONArray a=new JSONArray();
+        for(Tx t:history){
+            JSONObject o=new JSONObject();
+            try{
+                o.put("s",t.symbol);
+                o.put("a",t.side);
+                o.put("q",t.qty);
+                o.put("p",t.price);
+                o.put("v",t.total);
+                o.put("t",t.time);
+                a.put(o);
+            }catch(Exception ignored){}
+        }
+        prefs.edit()
+            .putLong("cash",Double.doubleToLongBits(cash))
+            .putString("holdings",h.toString())
+            .putString("history",a.toString())
+            .apply();
+    }
     void buildShell(){
         root=new LinearLayout(this);root.setOrientation(1);root.setBackgroundColor(BG);
         setContentView(root);
