@@ -21,10 +21,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          log-accepted-android-sdk-licenses: false
+      - name: Setup Android SDK Path
+        run: |
+          echo "ANDROID_COMMANDLINE_TOOLS_VERSION=11076708" >> $GITHUB_ENV
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+
+      - name: Accept Android Licenses Manually
+        run: |
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -43,4 +47,5 @@ jobs:
           name: HAM-Signal-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
 
