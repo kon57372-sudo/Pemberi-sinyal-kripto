@@ -183,16 +183,29 @@ public class MainActivity extends Activity {
 
     View balanceCard(){
         LinearLayout card=card();
-        card.addView(text("TOTAL NILAI ASET",12,MUTED,true));
+
         double total=cash;
         for(String sym:holdings.keySet()){
             Coin coin=findSymbol(sym);
-            if(coin!=null)total+=holdings.get(sym)*coin.price;
+            if(coin!=null){
+                total+=holdings.get(sym)*coin.price;
+            }
         }
-        TextView val=text("$"+fmt(total),28,WHITE,true);
-        val.setPadding(0,dp(8),0,dp(5));card.addView(val);
-        card.addView(text("Saldo tersedia  $"+fmt(cash),14,GREEN,true));
-        card.addView(text("Saldo trading virtual",10,MUTED,false));
+
+        card.addView(text("SALDO USD TERSEDIA",12,MUTED,true));
+
+        TextView val=text("$"+fmt(cash),28,WHITE,true);
+        val.setPadding(0,dp(8),0,dp(12));
+        card.addView(val);
+
+        card.addView(text("TOTAL NILAI ASET",11,MUTED,true));
+        card.addView(text("$"+fmt(total),18,GREEN,true));
+
+        card.addView(text(
+            "Saldo USD berkurang saat membeli dan bertambah saat menjual.",
+            10,MUTED,false
+        ));
+
         return card;
     }
 
