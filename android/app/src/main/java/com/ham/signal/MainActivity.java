@@ -155,10 +155,16 @@ public class MainActivity extends Activity {
                         coins.add(c);
                     }
 
-                    runOnUiThread(() ->
-                        status.setText("Memindai halaman " + page + " dari 4..."));
+                    
+                        final int currentPage = page;
+                              runOnUiThread(() ->
+                                 status.setText("Memindai halaman " + currentPage + " dari 4..."));
 
-                    if (page < 4) Thread.sleep(2500);
+                             if (page < 4) Thread.sleep(2500);
+
+                        
+
+                    
                 }
 
                 Collections.sort(coins, (a, b) ->
