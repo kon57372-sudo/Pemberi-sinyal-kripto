@@ -2,577 +2,666 @@ package com.ham.signal;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Typeface;
 import android.os.Bundle;
-import android.graphics.*;
-import android.graphics.drawable.GradientDrawable;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.*;
-import android.text.Editable;
-import android.text.TextWatcher;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
-import java.net.HttpURLConnection;
-import java.net.URL;
+
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 public class MainActivity extends Activity {
-    final int BG = 0xFF0B0E11, PANEL = 0xFF181A20;
-    final int WHITE = 0xFFEAECEF, MUTED = 0xFF848E9C;
-    final int GREEN = 0xFF0ECB81, RED = 0xFFF6465D;
-    final int YELLOW = 0xFFF0B90B;
+    private final int BG = Color.rgb(11, 15, 23);
+    private final int PANEL = Color.rgb(20, 27, 39);
+    private final int PANEL2 = Color.rgb(27, 36, 51);
+    private final int WHITE = Color.rgb(238, 243, 250);
+    private final int MUTED = Color.rgb(145, 158, 178);
+    private final int GREEN = Color.rgb(22, 199, 132);
+    private final int RED = Color.rgb(246, 70, 93);
+    private final int BLUE = Color.rgb(72, 130, 255);
 
-    LinearLayout root, content, top;
-    TextView status;
-    EditText search;
-    final ArrayList<Coin> coins = new ArrayList<>();
-    final ExecutorService executor = Executors.newSingleThreadExecutor();
-    android.content.SharedPreferences prefs;
-    String page = "Home";
-    Coin selected;
-    boolean loading = false;
-
-    android.content.SharedPreferences nullSafePrefs() {
-        return getSharedPreferences("ham_sim", MODE_PRIVATE);
-    }
+    private LinearLayout root, body, bottom;
+    private TextView status;
+    private EditText searchBox;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ArrayList<Coin> coins = new ArrayList<>();
+    private final Map<String, Double> holdings = new HashMap<>();
+    private final Map<String, Double> avgPrices = new HashMap<>();
+    private double cash = 10000.0;
+    private String page = "Home";
+    private String selectedCoin = "bitcoin";
+    private String query = "";
+    private String currency = "USD";
+    private boolean loading = false;
 
     static class Coin {
-        String id, name, symbol;
-        double price, change, cap, volume;
-        int rank;
-        Coin(JSONObject o) {
-            id = o.optString("id");
-            name = o.optString("name");
-            symbol = o.optString("symbol").toUpperCase(Locale.ROOT);
-            price = o.optDouble("current_price");
-            change = o.optDouble("price_change_percentage_24h");
-            cap = o.optDouble("market_cap");
-            volume = o.optDouble("total_volume");
-            rank = o.optInt("market_cap_rank", 999999);
-        }
-        double score() {
-            double ratio = cap > 0 ? volume / cap * 100 : 0;
-            return 50 + (change > 0 && change < 4 ? 15 : 0)
-                + (ratio >= 10 ? 15 : ratio >= 5 ? 8 : 0)
-                + (rank <= 300 ? 5 : 0);
-        }
+        String id, name, symbol, image;
+        double price, change, marketCap, volume, high, low;
+        ArrayList<Double> spark = new ArrayList<>();
     }
 
-    @Override public void onCreate(Bundle b) {
-        super.onCreate(b);
-        prefs = getSharedPreferences("ham_sim", MODE_PRIVATE);
+    @Override public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
+        getWindow().getDecorView().setSystemUiVisibility(0);
         buildShell();
-        loadMarkets();
+        fetchMarkets();
     }
 
-    GradientDrawable shape(int color, int radius) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(radius);
-        return d;
+    private void buildShell() {
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(BG);
+        setContentView(root);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(18), dp(15), dp(18), dp(12));
+        top.setBackgroundColor(BG);
+        TextView logo = text("HAM", 25, WHITE, true);
+        TextView badge = text("  CRYPTO SIGNAL", 13, GREEN, true);
+        top.addView(logo);
+        top.addView(badge);
+        View spacer = new View(this);
+        top.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1));
+        Button refresh = smallButton("↻");
+        refresh.setOnClickListener(v -> fetchMarkets());
+        top.addView(refresh);
+        root.addView(top);
+
+        status = text("Menghubungkan ke data pasar…", 11, MUTED, false);
+        status.setPadding(dp(18), 0, dp(18), dp(8));
+        root.addView(status);
+
+        FrameLayout frame = new FrameLayout(this);
+        root.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1));
+        body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        frame.addView(body, new FrameLayout.LayoutParams(-1, -1));
+
+        bottom = new LinearLayout(this);
+        bottom.setBackgroundColor(PANEL);
+        bottom.setPadding(dp(3), dp(7), dp(3), dp(8));
+        bottom.setGravity(Gravity.CENTER);
+        String[] labels = {"Home", "Markets", "Scanner", "Trade", "Assets"};
+        String[] icons = {"⌂", "▥", "⌕", "⇄", "◉"};
+        for (int i = 0; i < labels.length; i++) {
+            final String name = labels[i];
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER);
+            TextView icon = text(icons[i], 20, name.equals(page) ? GREEN : MUTED, true);
+            TextView label = text(labels[i], 10, name.equals(page) ? GREEN : MUTED, true);
+            item.addView(icon);
+            item.addView(label);
+            item.setPadding(0, dp(2), 0, dp(2));
+            item.setOnClickListener(v -> showPage(name));
+            bottom.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+        root.addView(bottom);
+        showPage("Home");
     }
 
-    TextView text(String value, int size, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextSize(size);
-        t.setTextColor(color);
-        if (bold) t.setTypeface(null, android.graphics.Typeface.BOLD);
-        return t;
+    private void showPage(String name) {
+        page = name;
+        body.removeAllViews();
+        if (name.equals("Home")) renderHome();
+        else if (name.equals("Markets")) renderMarkets(false);
+        else if (name.equals("Scanner")) renderMarkets(true);
+        else if (name.equals("Trade")) renderTrade();
+        else renderAssets();
+        rebuildBottom();
     }
 
-    LinearLayout column() {
+    private void rebuildBottom() {
+        if (bottom == null) return;
+        bottom.removeAllViews();
+        String[] labels = {"Home", "Markets", "Scanner", "Trade", "Assets"};
+        String[] icons = {"⌂", "▥", "⌕", "⇄", "◉"};
+        for (int i = 0; i < labels.length; i++) {
+            final String name = labels[i];
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER);
+            item.addView(text(icons[i], 20, name.equals(page) ? GREEN : MUTED, true));
+            item.addView(text(labels[i], 10, name.equals(page) ? GREEN : MUTED, true));
+            item.setPadding(0, dp(2), 0, dp(2));
+            item.setOnClickListener(v -> showPage(name));
+            bottom.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+    }
+
+    private void renderHome() {
+        ScrollView sc = scroll();
+        LinearLayout content = column();
+        sc.addView(content);
+        body.addView(sc);
+        content.addView(titleBlock("Dashboard", "Ringkasan pasar kripto real-time"));
+        Coin btc = find("bitcoin");
+        Coin eth = find("ethereum");
+
+        LinearLayout hero = cardColumn();
+        hero.addView(text("TOTAL SALDO SIMULASI", 11, MUTED, true));
+        hero.addView(text("$" + money(totalEquity()), 30, WHITE, true));
+        hero.addView(text("Saldo virtual • bukan uang sungguhan", 11, MUTED, false));
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, dp(15), 0, 0);
+        Button buy = actionButton("Mulai Trading", GREEN);
+        buy.setOnClickListener(v -> showPage("Trade"));
+        Button scanner = actionButton("Buka Scanner", PANEL2);
+        scanner.setOnClickListener(v -> showPage("Scanner"));
+        row.addView(buy, new LinearLayout.LayoutParams(0, dp(44), 1));
+        row.addView(space(dp(8)));
+        row.addView(scanner, new LinearLayout.LayoutParams(0, dp(44), 1));
+        hero.addView(row);
+        content.addView(hero);
+
+        content.addView(sectionHeader("Pasar utama", "Lihat semua", () -> showPage("Markets")));
+        if (btc != null) content.addView(coinRow(btc, true));
+        if (eth != null) content.addView(coinRow(eth, true));
+
+        content.addView(sectionHeader("Peluang scanner", "Semua sinyal", () -> showPage("Scanner")));
+        ArrayList<Coin> ranked = new ArrayList<>(coins);
+        ranked.sort((a,b) -> Double.compare(b.change, a.change));
+        int count = Math.min(5, ranked.size());
+        for (int i=0; i<count; i++) content.addView(signalRow(ranked.get(i)));
+
+        content.addView(cardNote("Catatan", "Sinyal dihitung sederhana dari perubahan harga 24 jam dan data pasar. Ini bukan saran investasi dan tidak menjamin hasil."));
+    }
+
+    private void renderMarkets(boolean scanner) {
+        ScrollView sc = scroll();
+        LinearLayout content = column();
+        sc.addView(content);
+        body.addView(sc);
+        content.addView(titleBlock(scanner ? "Coin Scanner" : "Pasar Kripto",
+                scanner ? "Peringkat peluang berdasarkan perubahan 24 jam" : "Harga, volume, kapitalisasi pasar"));
+        searchBox = new EditText(this);
+        searchBox.setSingleLine(true);
+        searchBox.setTextColor(WHITE);
+        searchBox.setHintTextColor(MUTED);
+        searchBox.setHint("Cari nama atau simbol koin…");
+        searchBox.setTextSize(14);
+        searchBox.setPadding(dp(14), 0, dp(14), 0);
+        searchBox.setBackground(round(PANEL2, 12));
+        content.addView(searchBox, new LinearLayout.LayoutParams(-1, dp(48)));
+        searchBox.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s,int st,int c,int a) {}
+            public void onTextChanged(CharSequence s,int start,int before,int count) {
+                query = s.toString().toLowerCase(Locale.US);
+                refreshCoinList(content, scanner);
+            }
+            public void afterTextChanged(Editable e) {}
+        });
+        LinearLayout list = column();
+        content.addView(list);
+        fillCoinList(list, scanner);
+    }
+
+    private void refreshCoinList(LinearLayout content, boolean scanner) {
+        // Keep the search box and rebuild the result section in place.
+        if (content.getChildCount() < 3) return;
+        LinearLayout list = (LinearLayout) content.getChildAt(2);
+        fillCoinList(list, scanner);
+    }
+
+    private void fillCoinList(LinearLayout list, boolean scanner) {
+        list.removeAllViews();
+        ArrayList<Coin> shown = new ArrayList<>();
+        for (Coin c : coins) {
+            if (!query.isEmpty() && !(c.name.toLowerCase(Locale.US).contains(query) ||
+                    c.symbol.toLowerCase(Locale.US).contains(query))) continue;
+            shown.add(c);
+        }
+        if (scanner) shown.sort((a,b) -> Double.compare(b.change, a.change));
+        if (shown.isEmpty()) {
+            list.addView(cardNote("Data sedang dimuat", "Tekan tombol ↻ di bagian atas untuk mengambil data pasar."));
+            return;
+        }
+        for (Coin c : shown) list.addView(scanner ? signalRow(c) : coinRow(c, false));
+    }
+
+    private void renderCoinDetail(Coin c) {
+        selectedCoin = c.id;
+        body.removeAllViews();
+        ScrollView sc = scroll();
+        LinearLayout content = column();
+        sc.addView(content);
+        body.addView(sc);
+        content.addView(titleBlock(c.name + " (" + c.symbol.toUpperCase(Locale.US) + ")", "Detail aset • data 24 jam"));
+        LinearLayout priceCard = cardColumn();
+        priceCard.addView(text("$" + price(c.price), 29, WHITE, true));
+        priceCard.addView(text((c.change >= 0 ? "+" : "") + pct(c.change) + "% dalam 24 jam",
+                13, c.change >= 0 ? GREEN : RED, true));
+        priceCard.addView(new SparkChart(c.spark, c.change >= 0 ? GREEN : RED), new LinearLayout.LayoutParams(-1, dp(150)));
+        content.addView(priceCard);
+        LinearLayout stats = new LinearLayout(this);
+        stats.addView(statCard("Market Cap", "$" + compact(c.marketCap)), new LinearLayout.LayoutParams(0, -2, 1));
+        stats.addView(space(dp(8)));
+        stats.addView(statCard("Volume 24j", "$" + compact(c.volume)), new LinearLayout.LayoutParams(0, -2, 1));
+        content.addView(stats);
+        LinearLayout stats2 = new LinearLayout(this);
+        stats2.addView(statCard("Tertinggi 24j", "$" + price(c.high)), new LinearLayout.LayoutParams(0, -2, 1));
+        stats2.addView(space(dp(8)));
+        stats2.addView(statCard("Terendah 24j", "$" + price(c.low)), new LinearLayout.LayoutParams(0, -2, 1));
+        content.addView(stats2);
+        content.addView(sectionHeader("Sinyal HAM", null, null));
+        String signal = c.change > 3 ? "MOMENTUM NAIK" : c.change < -3 ? "TEKANAN JUAL" : "NETRAL / TUNGGU";
+        int color = c.change > 3 ? GREEN : c.change < -3 ? RED : MUTED;
+        content.addView(cardNote(signal, "Perubahan 24 jam: " + pct(c.change) + "%. Gunakan indikator ini sebagai informasi awal, bukan kepastian arah harga."));
+        LinearLayout buttons = new LinearLayout(this);
+        Button buy = actionButton("Beli Simulasi", GREEN);
+        Button sell = actionButton("Jual Simulasi", RED);
+        buy.setOnClickListener(v -> tradeDialog(c, true));
+        sell.setOnClickListener(v -> tradeDialog(c, false));
+        buttons.addView(buy, new LinearLayout.LayoutParams(0, dp(46), 1));
+        buttons.addView(space(dp(8)));
+        buttons.addView(sell, new LinearLayout.LayoutParams(0, dp(46), 1));
+        content.addView(buttons);
+        Button back = actionButton("← Kembali ke pasar", PANEL2);
+        back.setOnClickListener(v -> showPage("Markets"));
+        content.addView(back);
+    }
+
+    private void renderTrade() {
+        ScrollView sc = scroll();
+        LinearLayout content = column();
+        sc.addView(content);
+        body.addView(sc);
+        content.addView(titleBlock("Paper Trading", "Latihan beli/jual dengan saldo virtual"));
+        LinearLayout balance = cardColumn();
+        balance.addView(text("SALDO TERSEDIA", 11, MUTED, true));
+        balance.addView(text("$" + money(cash), 29, WHITE, true));
+        balance.addView(text("Total nilai akun: $" + money(totalEquity()), 12, GREEN, true));
+        content.addView(balance);
+        content.addView(sectionHeader("Pilih aset", null, null));
+        for (Coin c : coins) {
+            if (holdings.getOrDefault(c.id, 0.0) > 0 || c.id.equals("bitcoin") || c.id.equals("ethereum")) {
+                LinearLayout r = coinRow(c, false);
+                r.setOnClickListener(v -> { selectedCoin = c.id; tradeDialog(c, true); });
+                content.addView(r);
+            }
+        }
+        content.addView(cardNote("Cara kerja", "Pilih koin lalu masukkan nilai USD untuk membeli. Penjualan mengurangi jumlah aset virtual. Tidak ada order yang dikirim ke bursa."));
+    }
+
+    private void renderAssets() {
+        ScrollView sc = scroll();
+        LinearLayout content = column();
+        sc.addView(content);
+        body.addView(sc);
+        content.addView(titleBlock("Aset Saya", "Portofolio simulasi"));
+        content.addView(cardNote("Nilai akun", "$" + money(totalEquity()) + " • Saldo tunai $" + money(cash)));
+        boolean any = false;
+        for (Coin c : coins) {
+            double qty = holdings.getOrDefault(c.id, 0.0);
+            if (qty <= 0) continue;
+            any = true;
+            LinearLayout card = cardColumn();
+            LinearLayout r = new LinearLayout(this);
+            r.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout names = column();
+            names.addView(text(c.name, 15, WHITE, true));
+            names.addView(text(qty + " " + c.symbol.toUpperCase(Locale.US), 11, MUTED, false));
+            r.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
+            r.addView(text("$" + money(qty*c.price), 15, WHITE, true));
+            card.addView(r);
+            content.addView(card);
+        }
+        if (!any) content.addView(cardNote("Belum ada aset", "Buka menu Trade untuk mencoba transaksi simulasi."));
+        Button reset = actionButton("Reset portofolio simulasi", PANEL2);
+        reset.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("Reset simulasi?")
+                .setMessage("Saldo kembali ke $10.000 dan semua aset simulasi dihapus.")
+                .setNegativeButton("Batal", null).setPositiveButton("Reset", (d,w) -> {
+                    cash = 10000; holdings.clear(); avgPrices.clear(); showPage("Assets");
+                }).show());
+        content.addView(reset);
+    }
+
+    private void tradeDialog(Coin c, boolean buy) {
+        EditText input = new EditText(this);
+        input.setInputType(8194);
+        input.setSingleLine(true);
+        input.setText("100");
+        input.setHint("Nilai USD");
+        new AlertDialog.Builder(this)
+                .setTitle((buy ? "Beli " : "Jual ") + c.symbol.toUpperCase(Locale.US) + " (simulasi)")
+                .setMessage("Harga saat ini: $" + price(c.price) + "\nMasukkan nilai transaksi dalam USD.")
+                .setView(input)
+                .setNegativeButton("Batal", null)
+                .setPositiveButton(buy ? "Beli" : "Jual", (d,w) -> {
+                    double amount;
+                    try { amount = Double.parseDouble(input.getText().toString().trim()); }
+                    catch (Exception e) { toast("Masukkan angka yang benar"); return; }
+                    if (amount <= 0 || c.price <= 0) { toast("Nilai transaksi tidak valid"); return; }
+                    double qty = amount / c.price;
+                    double owned = holdings.getOrDefault(c.id, 0.0);
+                    if (buy) {
+                        if (amount > cash) { toast("Saldo virtual tidak cukup"); return; }
+                        double oldCost = avgPrices.getOrDefault(c.id, c.price) * owned;
+                        cash -= amount;
+                        holdings.put(c.id, owned + qty);
+                        avgPrices.put(c.id, (oldCost + amount) / (owned + qty));
+                        toast("Beli simulasi berhasil");
+                    } else {
+                        if (owned <= 0) { toast("Kamu belum memiliki aset ini"); return; }
+                        double sellQty = Math.min(qty, owned);
+                        cash += sellQty * c.price;
+                        double remaining = owned - sellQty;
+                        if (remaining < 1e-12) { holdings.remove(c.id); avgPrices.remove(c.id); }
+                        else holdings.put(c.id, remaining);
+                        toast("Jual simulasi berhasil");
+                    }
+                    showPage(page);
+                }).show();
+    }
+
+    private LinearLayout coinRow(Coin c, boolean compactRow) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(13), dp(12), dp(13), dp(12));
+        card.setBackground(round(PANEL, 13));
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView symbol = text(c.symbol.substring(0, Math.min(1,c.symbol.length())).toUpperCase(Locale.US), 17, WHITE, true);
+        symbol.setGravity(Gravity.CENTER);
+        symbol.setBackground(round(PANEL2, 24));
+        row.addView(symbol, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        LinearLayout nameBox = column();
+        nameBox.setPadding(dp(10), 0, dp(4), 0);
+        nameBox.addView(text(c.name, 14, WHITE, true));
+        nameBox.addView(text(c.symbol.toUpperCase(Locale.US) + " • Cap $" + compact(c.marketCap), 10, MUTED, false));
+        row.addView(nameBox, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout right = column();
+        right.setGravity(Gravity.RIGHT);
+        right.addView(text("$" + price(c.price), 14, WHITE, true));
+        right.addView(text((c.change >= 0 ? "+" : "") + pct(c.change) + "%", 12, c.change >= 0 ? GREEN : RED, true));
+        row.addView(right);
+        card.addView(row);
+        card.setOnClickListener(v -> renderCoinDetail(c));
+        card.setClickable(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(7);
+        card.setLayoutParams(lp);
+        return card;
+    }
+
+    private LinearLayout signalRow(Coin c) {
+        LinearLayout card = coinRow(c, false);
+        TextView tag = text(c.change > 3 ? "▲ MOMENTUM" : c.change < -3 ? "▼ TEKANAN JUAL" : "• NETRAL / TUNGGU",
+                10, c.change > 3 ? GREEN : c.change < -3 ? RED : MUTED, true);
+        tag.setPadding(dp(48), dp(3), 0, 0);
+        card.addView(tag);
+        return card;
+    }
+
+    private View titleBlock(String title, String subtitle) {
+        LinearLayout box = column();
+        box.setPadding(0, dp(6), 0, dp(14));
+        box.addView(text(title, 23, WHITE, true));
+        box.addView(text(subtitle, 12, MUTED, false));
+        return box;
+    }
+
+    private View sectionHeader(String title, String action, Runnable run) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(18), 0, dp(9));
+        row.addView(text(title, 16, WHITE, true), new LinearLayout.LayoutParams(0, -2, 1));
+        if (action != null) {
+            TextView a = text(action + " →", 12, GREEN, true);
+            a.setOnClickListener(v -> run.run());
+            row.addView(a);
+        }
+        return row;
+    }
+
+    private LinearLayout cardColumn() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(16), dp(16), dp(16), dp(16));
+        c.setBackground(round(PANEL, 15));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(9);
+        c.setLayoutParams(lp);
+        return c;
+    }
+
+    private View statCard(String label, String value) {
+        LinearLayout c = cardColumn();
+        c.addView(text(label, 10, MUTED, true));
+        c.addView(text(value, 15, WHITE, true));
+        return c;
+    }
+
+    private View cardNote(String title, String bodyText) {
+        LinearLayout c = cardColumn();
+        c.addView(text(title, 13, WHITE, true));
+        TextView t = text(bodyText, 11, MUTED, false);
+        t.setPadding(0, dp(5), 0, 0);
+        c.addView(t);
+        return c;
+    }
+
+    private void fetchMarkets() {
+        if (loading) return;
+        loading = true;
+        status.setText("Mengambil data pasar CoinGecko…");
+        new Thread(() -> {
+            ArrayList<Coin> result = new ArrayList<>();
+            String error = null;
+            HttpURLConnection conn = null;
+            try {
+                URL url = new URL("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=24h");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(12000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("Accept", "application/json");
+                conn.setRequestProperty("User-Agent", "HAM-Crypto-Signal-Android/1.0");
+                int code = conn.getResponseCode();
+                if (code != 200) throw new Exception("HTTP " + code);
+                BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+                br.close();
+                JSONArray arr = new JSONArray(sb.toString());
+                for (int i=0; i<arr.length(); i++) {
+                    JSONObject o = arr.getJSONObject(i);
+                    Coin c = new Coin();
+                    c.id = o.optString("id");
+                    c.name = o.optString("name", c.id);
+                    c.symbol = o.optString("symbol", "?");
+                    c.image = o.optString("image");
+                    c.price = o.optDouble("current_price", 0);
+                    c.change = o.optDouble("price_change_percentage_24h", 0);
+                    c.marketCap = o.optDouble("market_cap", 0);
+                    c.volume = o.optDouble("total_volume", 0);
+                    c.high = o.optDouble("high_24h", c.price);
+                    c.low = o.optDouble("low_24h", c.price);
+                    JSONObject sp = o.optJSONObject("sparkline_in_7d");
+                    JSONArray points = sp == null ? null : sp.optJSONArray("price");
+                    if (points != null) {
+                        int step = Math.max(1, points.length()/50);
+                        for (int j=0; j<points.length(); j+=step) c.spark.add(points.optDouble(j, c.price));
+                    }
+                    result.add(c);
+                }
+            } catch (Exception e) { error = e.getMessage(); }
+            finally { if (conn != null) conn.disconnect(); }
+            final String err = error;
+            handler.post(() -> {
+                loading = false;
+                if (!result.isEmpty()) {
+                    coins.clear();
+                    coins.addAll(result);
+                    status.setText("LIVE • CoinGecko • " + coins.size() + " aset • diperbarui saat refresh");
+                    showPage(page);
+                } else {
+                    status.setText("Data gagal dimuat • " + (err == null ? "periksa koneksi" : err));
+                    if (coins.isEmpty()) {
+                        body.removeAllViews();
+                        LinearLayout c = column();
+                        c.addView(titleBlock("HAM Crypto Signal", "Data pasar belum tersedia"));
+                        c.addView(cardNote("Tidak dapat terhubung", "Periksa koneksi internet lalu tekan tombol ↻. Pastikan izin INTERNET tersedia di AndroidManifest.xml."));
+                        body.addView(c);
+                    }
+                    toast("Data pasar gagal dimuat. Coba refresh.");
+                }
+            });
+        }).start();
+    }
+
+    private Coin find(String id) {
+        for (Coin c : coins) if (c.id.equals(id)) return c;
+        return null;
+    }
+
+    private double totalEquity() {
+        double total = cash;
+        for (Coin c : coins) total += holdings.getOrDefault(c.id, 0.0) * c.price;
+        return total;
+    }
+
+    private ScrollView scroll() {
+        ScrollView s = new ScrollView(this);
+        s.setFillViewport(false);
+        s.setClipToPadding(false);
+        s.setPadding(dp(16), dp(4), dp(16), dp(16));
+        return s;
+    }
+
+    private LinearLayout column() {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
         return l;
     }
 
-    LinearLayout row() {
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.HORIZONTAL);
-        l.setGravity(Gravity.CENTER_VERTICAL);
-        return l;
+    private TextView text(String value, int size, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(value);
+        t.setTextSize(size);
+        t.setTextColor(color);
+        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return t;
     }
 
-    void pad(View v, int a, int b, int c, int d) {
-        v.setPadding(a,b,c,d);
+    private Button actionButton(String label, int color) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(12);
+        b.setTextColor(color == PANEL2 ? WHITE : (color == GREEN ? Color.rgb(7,25,21) : Color.WHITE));
+        b.setAllCaps(false);
+        b.setBackground(round(color, 10));
+        b.setPadding(dp(8), 0, dp(8), 0);
+        return b;
     }
 
-    void buildShell() {
-        root = column();
-        root.setBackgroundColor(BG);
+    private Button smallButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(19);
+        b.setTextColor(WHITE);
+        b.setAllCaps(false);
+        b.setMinWidth(dp(42));
+        b.setPadding(0, 0, 0, 0);
+        b.setBackground(round(PANEL2, 10));
+        return b;
+    }
 
-        top = row();
-        pad(top, 18, 14, 18, 10);
-        TextView brand = text("HAM", 25, YELLOW, true);
-        top.addView(brand);
-        TextView sub = text("  CRYPTO", 16, WHITE, true);
-        top.addView(sub);
-        View spacer = new View(this);
-        top.addView(spacer, new LinearLayout.LayoutParams(0,1,1));
-        TextView refresh = text("↻", 28, WHITE, true);
-        refresh.setOnClickListener(v -> loadMarkets());
-        top.addView(refresh);
-        root.addView(top);
+    private View space(int width) {
+        View v = new View(this);
+        v.setLayoutParams(new LinearLayout.LayoutParams(width, 1));
+        return v;
+    }
 
-        FrameLayout frame = new FrameLayout(this);
-        content = column();
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.addView(content);
-        frame.addView(scroll);
-        root.addView(frame, new LinearLayout.LayoutParams(-1,0,1));
+    private android.graphics.drawable.GradientDrawable round(int color, int radius) {
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radius));
+        return d;
+    }
 
-        LinearLayout nav = row();
-        nav.setBackgroundColor(PANEL);
-        String[] labels = {"Home", "Markets", "Scanner", "Trade", "Assets"};
-        String[] icons = {"⌂", "▤", "⌕", "⇄", "◉"};
-        for (int i=0;i<labels.length;i++) {
-            final String dest = labels[i];
-            LinearLayout item = column();
-            item.setGravity(Gravity.CENTER);
-            pad(item, 1, 9, 1, 8);
-            TextView icon = text(icons[i], 21,
-                page.equals(dest) ? YELLOW : MUTED, true);
-            TextView label = text(dest, 10,
-                page.equals(dest) ? YELLOW : MUTED, false);
-            item.addView(icon);
-            item.addView(label);
-            item.setOnClickListener(v -> showPage(dest));
-            nav.addView(item, new LinearLayout.LayoutParams(0,-2,1));
+    private int dp(float v) { return (int)(getResources().getDisplayMetrics().density * v + 0.5f); }
+    private String money(double v) { return new DecimalFormat("#,##0.00").format(v); }
+    private String pct(double v) { return new DecimalFormat("0.00").format(v); }
+    private String price(double v) {
+        if (v >= 1000) return new DecimalFormat("#,##0.00").format(v);
+        if (v >= 1) return new DecimalFormat("0.0000").format(v);
+        if (v >= 0.01) return new DecimalFormat("0.00000").format(v);
+        return new DecimalFormat("0.########").format(v);
+    }
+    private String compact(double v) {
+        if (v >= 1e12) return new DecimalFormat("0.00").format(v/1e12) + "T";
+        if (v >= 1e9) return new DecimalFormat("0.00").format(v/1e9) + "B";
+        if (v >= 1e6) return new DecimalFormat("0.00").format(v/1e6) + "M";
+        if (v >= 1e3) return new DecimalFormat("0.00").format(v/1e3) + "K";
+        return money(v);
+    }
+    private void toast(String msg) { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }
+
+    private class SparkChart extends View {
+        private final ArrayList<Double> points;
+        private final int lineColor;
+        private final Paint p = new Paint(3);
+        SparkChart(ArrayList<Double> pts, int color) {
+            super(MainActivity.this);
+            points = new ArrayList<>(pts);
+            lineColor = color;
+            setBackground(round(PANEL, 8));
         }
-        root.addView(nav);
-        setContentView(root);
-    }
-
-    void showPage(String dest) {
-        page = dest;
-        buildShell();
-        if (dest.equals("Home")) home();
-        else if (dest.equals("Markets")) markets();
-        else if (dest.equals("Scanner")) scanner();
-        else if (dest.equals("Trade")) tradePage();
-        else if (dest.equals("Assets")) assets();
-    }
-
-    void heading(String title, String subtitle) {
-        content.addView(text(title, 24, WHITE, true));
-        if (subtitle != null) {
-            TextView s = text(subtitle, 12, MUTED, false);
-            pad(s,0,5,0,12);
-            content.addView(s);
-        }
-    }
-
-    void card(View v) {
-        LinearLayout wrap = column();
-        wrap.setBackground(shape(PANEL, 18));
-        pad(wrap, 16, 15, 16, 15);
-        wrap.addView(v);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1,-2);
-        lp.setMargins(0,6,0,10);
-        content.addView(wrap,lp);
-    }
-
-    void loadMarkets() {
-        if (loading) return;
-        loading = true;
-        if (status != null) status.setText("Memuat data pasar...");
-        executor.execute(() -> {
-            try {
-                URL url = new URL("https://api.coingecko.com/api/v3/coins/markets"
-                    + "?vs_currency=usd&order=market_cap_desc"
-                    + "&per_page=100&page=1&sparkline=false"
-                    + "&price_change_percentage=24h");
-                HttpURLConnection c = (HttpURLConnection)url.openConnection();
-                c.setConnectTimeout(15000);
-                c.setReadTimeout(20000);
-                c.setRequestProperty("User-Agent","HAM-Crypto-Signal/2.0");
-                int code = c.getResponseCode();
-                if (code != 200) throw new Exception("HTTP " + code);
-                StringBuilder body = new StringBuilder();
-                try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(c.getInputStream()))) {
-                    String line;
-                    while ((line=r.readLine())!=null) body.append(line);
-                }
-                c.disconnect();
-                JSONArray arr = new JSONArray(body.toString());
-                ArrayList<Coin> result = new ArrayList<>();
-                for (int i=0;i<arr.length();i++)
-                    result.add(new Coin(arr.getJSONObject(i)));
-                runOnUiThread(() -> {
-                    coins.clear();
-                    coins.addAll(result);
-                    loading = false;
-                    if (page.equals("Home")) home();
-                    else if (page.equals("Markets")) markets();
-                    else if (page.equals("Scanner")) scanner();
-                    else if (page.equals("Trade")) tradePage();
-                    else if (page.equals("Assets")) assets();
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    loading = false;
-                    content.removeAllViews();
-                    heading("Tidak dapat memuat pasar", "Periksa koneksi internet lalu coba lagi.");
-                    TextView err = text(e.getMessage(),14,RED,false);
-                    content.addView(err);
-                    Button retry = new Button(this);
-                    retry.setText("Coba lagi");
-                    retry.setOnClickListener(v -> loadMarkets());
-                    content.addView(retry);
-                });
-            }
-        });
-    }
-
-    String money(double n) {
-        if (n >= 1000) return String.format(Locale.US,"$%,.2f",n);
-        if (n >= 1) return String.format(Locale.US,"$%.4f",n);
-        return String.format(Locale.US,"$%.8f",n);
-    }
-
-    String compact(double n) {
-        if (n >= 1e12) return String.format(Locale.US,"$%.2fT",n/1e12);
-        if (n >= 1e9) return String.format(Locale.US,"$%.2fB",n/1e9);
-        if (n >= 1e6) return String.format(Locale.US,"$%.2fM",n/1e6);
-        if (n >= 1e3) return String.format(Locale.US,"$%.2fK",n/1e3);
-        return money(n);
-    }
-
-    TextView changeText(double change) {
-        return text(String.format(Locale.US,"%+.2f%%",change),
-            13,change>=0?GREEN:RED,true);
-    }
-
-    Coin find(String symbol) {
-        for (Coin c:coins) if (c.symbol.equalsIgnoreCase(symbol)) return c;
-        return null;
-    }
-
-    void home() {
-        content.removeAllViews();
-        heading("Pasar kripto", "Harga publik • USD • Data dapat tertunda");
-        LinearLayout balance = column();
-        balance.addView(text("SALDO SIMULASI",12,MUTED,true));
-        balance.addView(text("$"+String.format(Locale.US,"%.2f",
-            prefs.getFloat("cash",10000f)),30,WHITE,true));
-        balance.addView(text("Dana virtual — bukan uang sungguhan",12,MUTED,false));
-        card(balance);
-
-        LinearLayout stats = row();
-        stats.addView(stat("KOIN DIMUAT",String.valueOf(coins.size())),new LinearLayout.LayoutParams(0,-2,1));
-        stats.addView(stat("MODE","SIMULASI"),new LinearLayout.LayoutParams(0,-2,1));
-        card(stats);
-
-        content.addView(text("Koin utama",19,WHITE,true));
-        for (String sym:new String[]{"BTC","ETH","BNB","SOL"}) {
-            Coin c=find(sym);
-            if (c!=null) coinRow(c);
-        }
-        TextView all=text("Lihat semua pasar  →",14,YELLOW,true);
-        pad(all,0,15,0,20);
-        all.setOnClickListener(v -> showPage("Markets"));
-        content.addView(all);
-        TextView note=text("HAM Signal adalah alat informasi. Skor scanner bukan jaminan keuntungan.",12,MUTED,false);
-        pad(note,0,10,0,20);
-        content.addView(note);
-    }
-
-    LinearLayout stat(String title,String value) {
-        LinearLayout box=column();
-        box.setBackground(shape(PANEL,14));
-        pad(box,12,14,8,14);
-        box.addView(text(title,10,MUTED,true));
-        box.addView(text(value,17,WHITE,true));
-        return box;
-    }
-
-    void markets() {
-        content.removeAllViews();
-        heading("Markets", "Harga dan perubahan pasar");
-        search = new EditText(this);
-        search.setSingleLine(true);
-        search.setHint("Cari nama atau simbol koin");
-        search.setHintTextColor(MUTED);
-        search.setTextColor(WHITE);
-        search.setBackground(shape(PANEL,12));
-        pad(search,14,5,14,5);
-        content.addView(search);
-        LinearLayout list=column();
-        content.addView(list);
-        Runnable render=() -> {
-            list.removeAllViews();
-            String q=search.getText().toString().toLowerCase(Locale.ROOT);
-            for (Coin c:coins) {
-                if (!c.name.toLowerCase(Locale.ROOT).contains(q)
-                    && !c.symbol.toLowerCase(Locale.ROOT).contains(q)) continue;
-                addCoinRow(list,c);
-            }
-        };
-        search.addTextChangedListener(new TextWatcher() {
-            public void beforeTextChanged(CharSequence s,int st,int count,int after){}
-            public void onTextChanged(CharSequence s,int start,int before,int count){render.run();}
-            public void afterTextChanged(Editable e){}
-        });
-        render.run();
-    }
-
-    void coinRow(Coin c) { addCoinRow(content,c); }
-
-    void addCoinRow(LinearLayout target,Coin c) {
-        LinearLayout r=row();
-        pad(r,8,13,8,13);
-        LinearLayout name=column();
-        name.addView(text(c.name,15,WHITE,true));
-        name.addView(text(c.symbol+"  ·  #"+c.rank,11,MUTED,false));
-        r.addView(name,new LinearLayout.LayoutParams(0,-2,1));
-        LinearLayout right=column();
-        right.setGravity(Gravity.RIGHT);
-        right.addView(text(money(c.price),14,WHITE,true));
-        right.addView(changeText(c.change));
-        r.addView(right);
-        r.setOnClickListener(v -> detail(c));
-        target.addView(r);
-        View line=new View(this);
-        line.setBackgroundColor(0xFF292D35);
-        target.addView(line,new LinearLayout.LayoutParams(-1,1));
-    }
-
-    void scanner() {
-        content.removeAllViews();
-        heading("HAM Scanner", "Penyaringan awal berdasarkan volume, tren dan kapitalisasi");
-        Button refresh=new Button(this);
-        refresh.setText("PERBARUI DATA PASAR");
-        refresh.setOnClickListener(v -> loadMarkets());
-        content.addView(refresh);
-        ArrayList<Coin> ranked=new ArrayList<>(coins);
-        ranked.removeIf(c -> c.price<=0 || c.cap<=0 || c.volume<25000
-            || c.volume/c.cap<0.02 || c.change < -5 || c.change > 5);
-        ranked.sort((a,b)->Double.compare(b.score(),a.score()));
-        content.addView(text("Kandidat: "+ranked.size(),14,MUTED,false));
-        for (int i=0;i<Math.min(50,ranked.size());i++) {
-            Coin c=ranked.get(i);
-            LinearLayout box=column();
-            box.setBackground(shape(PANEL,14));
-            pad(box,14,12,14,12);
-            box.addView(text((i+1)+". "+c.name+" ("+c.symbol+")",
-                15,WHITE,true));
-            LinearLayout rr=row();
-            rr.addView(text("Skor "+(int)c.score()+"/85",12,YELLOW,true),
-                new LinearLayout.LayoutParams(0,-2,1));
-            rr.addView(changeText(c.change));
-            box.addView(rr);
-            box.addView(text("Harga "+money(c.price)+"  ·  Vol/MC "
-                +String.format(Locale.US,"%.2f%%",c.volume/c.cap*100),
-                12,MUTED,false));
-            box.setOnClickListener(v -> detail(c));
-            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
-            lp.setMargins(0,6,0,6);
-            content.addView(box,lp);
-        }
-        content.addView(text("Skor adalah filter heuristik, bukan prediksi atau rekomendasi investasi.",11,MUTED,false));
-    }
-
-    void detail(Coin c) {
-        selected=c;
-        page="Detail";
-        buildShell();
-        content.removeAllViews();
-        TextView back=text("‹  Kembali",15,YELLOW,true);
-        back.setOnClickListener(v -> showPage("Markets"));
-        content.addView(back);
-        heading(c.name+" ("+c.symbol+")","Peringkat kapitalisasi #"+c.rank);
-        LinearLayout price=column();
-        price.addView(text(money(c.price),30,WHITE,true));
-        price.addView(changeText(c.change));
-        card(price);
-
-        content.addView(text("Grafik harga 7 hari",17,WHITE,true));
-        TextView graphStatus=text("Mengambil data grafik...",12,MUTED,false);
-        content.addView(graphStatus);
-        PriceChart chart=new PriceChart(this);
-        content.addView(chart,new LinearLayout.LayoutParams(-1,230));
-        executor.execute(() -> {
-            try {
-                URL u=new URL("https://api.coingecko.com/api/v3/coins/"
-                    +c.id+"/market_chart?vs_currency=usd&days=7");
-                HttpURLConnection conn=(HttpURLConnection)u.openConnection();
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(20000);
-                conn.setRequestProperty("User-Agent","HAM-Crypto-Signal/2.0");
-                if(conn.getResponseCode()!=200) throw new Exception("Grafik tidak tersedia");
-                StringBuilder sb=new StringBuilder();
-                try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                    String line; while((line=br.readLine())!=null) sb.append(line);
-                }
-                conn.disconnect();
-                JSONArray arr=new JSONObject(sb.toString()).getJSONArray("prices");
-                ArrayList<Double> values=new ArrayList<>();
-                for(int i=0;i<arr.length();i++) values.add(arr.getJSONArray(i).getDouble(1));
-                runOnUiThread(() -> {chart.setValues(values);graphStatus.setText("Sumber: CoinGecko · 7 hari");});
-            } catch(Exception e) {
-                runOnUiThread(() -> graphStatus.setText("Grafik tidak tersedia saat ini. Harga terkini tetap ditampilkan."));
-            }
-        });
-
-        LinearLayout info=column();
-        info.addView(text("Kapitalisasi pasar  "+compact(c.cap),14,WHITE,false));
-        info.addView(text("Volume 24 jam  "+compact(c.volume),14,WHITE,false));
-        info.addView(text("Volume / kapitalisasi  "+String.format(Locale.US,"%.2f%%",c.cap>0?c.volume/c.cap*100:0),14,WHITE,false));
-        card(info);
-
-        LinearLayout buttons=row();
-        Button buy=new Button(this); buy.setText("BELI SIMULASI");
-        Button sell=new Button(this); sell.setText("JUAL SIMULASI");
-        buy.setOnClickListener(v -> tradeDialog(c,true));
-        sell.setOnClickListener(v -> tradeDialog(c,false));
-        buttons.addView(buy,new LinearLayout.LayoutParams(0,-2,1));
-        buttons.addView(sell,new LinearLayout.LayoutParams(0,-2,1));
-        content.addView(buttons);
-    }
-
-    class PriceChart extends View {
-        Paint paint=new Paint(3);
-        ArrayList<Double> values=new ArrayList<>();
-        PriceChart(Activity a){super(a);}
-        void setValues(ArrayList<Double> v){values=v;invalidate();}
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            canvas.drawColor(BG);
-            if(values.size()<2) return;
-            double min=Collections.min(values), max=Collections.max(values);
-            if(max==min) max=min+1;
-            float left=12, right=getWidth()-12, top=18, bottom=getHeight()-20;
-            paint.setColor(0xFF29313B); paint.setStrokeWidth(1);
-            for(int i=0;i<4;i++){
-                float y=top+(bottom-top)*i/3f;
-                canvas.drawLine(left,y,right,y,paint);
+            if (points.size() < 2) {
+                p.setColor(MUTED); p.setTextSize(dp(12));
+                canvas.drawText("Grafik 7 hari tidak tersedia", dp(8), getHeight()/2f, p);
+                return;
             }
-            paint.setColor(GREEN); paint.setStrokeWidth(3);
-            paint.setStyle(Paint.Style.STROKE);
-            Path path=new Path();
-            for(int i=0;i<values.size();i++){
-                float x=left+(right-left)*i/(values.size()-1f);
-                float y=bottom-(float)((values.get(i)-min)/(max-min))*(bottom-top);
-                if(i==0)path.moveTo(x,y); else path.lineTo(x,y);
+            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE;
+            for (double v : points) { min = Math.min(min, v); max = Math.max(max, v); }
+            if (max-min < 1e-12) max = min + 1;
+            float pad = dp(10), w = getWidth()-2*pad, h = getHeight()-2*pad;
+            Path path = new Path();
+            for (int i=0;i<points.size();i++) {
+                float x = pad + w*i/(points.size()-1);
+                float y = pad + h - (float)((points.get(i)-min)/(max-min))*h;
+                if (i==0) path.moveTo(x,y); else path.lineTo(x,y);
             }
-            canvas.drawPath(path,paint);
-            paint.setStyle(Paint.Style.FILL);
+            p.setColor(lineColor); p.setStrokeWidth(dp(2)); p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND); p.setStrokeJoin(Paint.Join.ROUND);
+            canvas.drawPath(path,p);
+            p.setStyle(Paint.Style.FILL);
         }
     }
-
-    void tradePage() {
-        content.removeAllViews();
-        heading("Trade simulasi", "Tidak terhubung ke bursa dan tidak menggunakan uang sungguhan");
-        content.addView(stat("SALDO USD VIRTUAL",
-            String.format(Locale.US,"$%.2f",prefs.getFloat("cash",10000f))));
-        for(Coin c:coins) {
-            LinearLayout r=row();
-            TextView name=text(c.symbol+"  "+money(c.price),14,WHITE,true);
-            r.addView(name,new LinearLayout.LayoutParams(0,-2,1));
-            Button buy=new Button(this);buy.setText("Beli");
-            Button sell=new Button(this);sell.setText("Jual");
-            buy.setOnClickListener(v->tradeDialog(c,true));
-            sell.setOnClickListener(v->tradeDialog(c,false));
-            r.addView(buy);r.addView(sell);
-            content.addView(r);
-        }
-    }
-
-    void tradeDialog(Coin c, boolean buy) {
-        EditText amount=new EditText(this);
-        amount.setInputType(8194);
-        amount.setSingleLine(true);
-        amount.setHint("Jumlah USD virtual");
-        amount.setTextColor(WHITE);
-        amount.setHintTextColor(MUTED);
-        LinearLayout box=column();pad(box,18,8,18,0);box.addView(amount);
-        new AlertDialog.Builder(this)
-            .setTitle((buy?"Beli ":"Jual ")+c.symbol+" (simulasi)")
-            .setMessage("Harga acuan: "+money(c.price)+"\nMasukkan nilai transaksi dalam USD.")
-            .setView(box)
-            .setNegativeButton("Batal",null)
-            .setPositiveButton(buy?"Beli":"Jual",(d,w)->{
-                try {
-                    double usd=Double.parseDouble(amount.getText().toString().trim());
-                    if(usd<=0 || c.price<=0) throw new Exception();
-                    double cash=prefs.getFloat("cash",10000f);
-                    String key="hold_"+c.symbol;
-                    double held=Double.longBitsToDouble(prefs.getLong(key,Double.doubleToLongBits(0)));
-                    if(buy) {
-                        if(usd>cash) {toast("Saldo virtual tidak cukup");return;}
-                        held+=usd/c.price;cash-=usd;
-                    } else {
-                        double qty=usd/c.price;
-                        if(qty>held) {toast("Kepemilikan simulasi tidak cukup");return;}
-                        held-=qty;cash+=usd;
-                    }
-                    prefs.edit().putFloat("cash",(float)cash)
-                        .putLong(key,Double.doubleToLongBits(held)).apply();
-                    toast("Transaksi simulasi berhasil dicatat");
-                    if(page.equals("Assets"))assets();
-                    else if(page.equals("Trade"))tradePage();
-                } catch(Exception ex) {toast("Masukkan jumlah USD yang valid");}
-            }).show();
-    }
-
-    void assets() {
-        content.removeAllViews();
-        heading("Assets", "Portofolio simulasi di perangkat ini");
-        double cash=prefs.getFloat("cash",10000f);
-        double total=cash;
-        for(Coin c:coins) {
-            double qty=Double.longBitsToDouble(prefs.getLong("hold_"+c.symbol,
-                Double.doubleToLongBits(0)));
-            total+=qty*c.price;
-        }
-        content.addView(stat("TOTAL ESTIMASI",String.format(Locale.US,"$%.2f",total)));
-        content.addView(stat("SALDO USD VIRTUAL",String.format(Locale.US,"$%.2f",cash)));
-        content.addView(text("Kepemilikan",18,WHITE,true));
-        boolean any=false;
-        for(Coin c:coins) {
-            double qty=Double.longBitsToDouble(prefs.getLong("hold_"+c.symbol,
-                Double.doubleToLongBits(0)));
-            if(qty<=0)continue;
-            any=true;
-            LinearLayout r=row();
-            LinearLayout left=column();
-            left.addView(text(c.name+" ("+c.symbol+")",14,WHITE,true));
-            left.addView(text(String.format(Locale.US,"%.8f koin",qty),12,MUTED,false));
-            r.addView(left,new LinearLayout.LayoutParams(0,-2,1));
-            r.addView(text(money(qty*c.price),14,WHITE,true));
-            content.addView(r);
-        }
-        if(!any)content.addView(text("Belum ada aset. Buka Trade untuk mencoba transaksi simulasi.",13,MUTED,false));
-        Button reset=new Button(this);
-        reset.setText("RESET SALDO SIMULASI");
-        reset.setOnClickListener(v -> new AlertDialog.Builder(this)
-            .setTitle("Reset portofolio?")
-            .setMessage("Saldo virtual akan kembali ke $10.000 dan semua kepemilikan simulasi dihapus.")
-            .setNegativeButton("Batal",null)
-            .setPositiveButton("Reset",(d,w)->{
-                android.content.SharedPreferences.Editor e=prefs.edit().clear();
-                e.putFloat("cash",10000f).apply();
-                assets();
-            }).show());
-        content.addView(reset);
-    }
-
-    void toast(String s) {
-        Toast.makeText(this,s,Toast.LENGTH_SHORT).show();
-    }
-
-    @Override protected void onDestroy() {
-        super.onDestroy();
-        executor.shutdownNow();
-    }
-}
+                                    }
