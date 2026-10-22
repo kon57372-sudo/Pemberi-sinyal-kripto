@@ -1,43 +1,45 @@
-name: Build HAM Signal APK
+name: Buat APK Sinyal HAM
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [utama]
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  membangun:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout project
+      - name: Periksa proyek
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Instal Java
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
+          distribution: 'Temurin'
+          java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK & Accept Licenses
+        run: |
+          sdkmanager --update
+          yes | sdkmanager --licenses
 
-      - name: Set up Gradle
+      - name: Siapkan Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Configure Android SDK
+      - name: Konfigurasi Android SDK
         run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
-      - name: Build APK
-        run: gradle --no-daemon -p android assembleDebug
+      - name: Buat APK
+        run: ./gradlew --no-daemon -p android assembleDebug
 
-      - name: Upload APK
+      - name: Unggah APK
         uses: actions/upload-artifact@v4
         with:
           name: HAM-Signal-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
