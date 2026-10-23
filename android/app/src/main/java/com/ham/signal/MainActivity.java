@@ -31,14 +31,16 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     
-    private String geminiApiKey = ""; 
+    // Mengganti nama variabel agar lebih umum
+    private String apiKey = ""; 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
         prefs = getSharedPreferences("ai_studio_prefs", Context.MODE_PRIVATE);
-        geminiApiKey = prefs.getString("gemini_api_key", "");
+        // Menggunakan key preference baru untuk DeepSeek
+        apiKey = prefs.getString("deepseek_api_key", "");
         
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xFF0B0F17); 
@@ -56,7 +58,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subTitle = new TextView(this);
-        subTitle.setText("Direct AI Engine (No Server)");
+        subTitle.setText("Direct AI Engine (DeepSeek Edition)");
         subTitle.setTextColor(0xFF91A0B5);
         subTitle.setTextSize(14);
         subTitle.setGravity(Gravity.CENTER);
@@ -64,8 +66,8 @@ public class MainActivity extends Activity {
         root.addView(subTitle);
 
         statusText = new TextView(this);
-        statusText.setText(geminiApiKey.isEmpty() ? "Status: API Key Belum Diatur" : "Status: Siap Produksi");
-        statusText.setTextColor(geminiApiKey.isEmpty() ? 0xFFF6465D : 0xFF16C784);
+        statusText.setText(apiKey.isEmpty() ? "Status: API Key Belum Diatur" : "Status: Siap Produksi");
+        statusText.setTextColor(apiKey.isEmpty() ? 0xFFF6465D : 0xFF16C784);
         statusText.setPadding(16, 16, 16, 16);
         statusText.setBackgroundColor(0xFF1B2433);
         root.addView(statusText);
@@ -75,7 +77,7 @@ public class MainActivity extends Activity {
         addFeatureButton("2. Character Studio", this::showCharacterDialog);
         
         addSection("PENGATURAN API");
-        addFeatureButton("3. Set API Key Gemini", this::showApiKeyDialog);
+        addFeatureButton("3. Set API Key DeepSeek", this::showApiKeyDialog);
         addFeatureButton("4. Tes Koneksi AI", this::testConnection);
 
         scroll.addView(root);
@@ -110,18 +112,18 @@ public class MainActivity extends Activity {
 
     void showApiKeyDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Masukkan Gemini API Key");
+        builder.setTitle("Masukkan DeepSeek API Key");
 
         EditText input = new EditText(this);
-        input.setHint("Contoh: AQ.Ab8RN6...");
-        input.setText(geminiApiKey); 
+        input.setHint("Contoh: sk-xxxxxxxxxxxx");
+        input.setText(apiKey); 
         builder.setView(input);
 
         builder.setPositiveButton("Simpan", (dialog, which) -> {
             String key = input.getText().toString().trim();
             if(!key.isEmpty()) {
-                geminiApiKey = key;
-                prefs.edit().putString("gemini_api_key", key).apply();
+                apiKey = key;
+                prefs.edit().putString("deepseek_api_key", key).apply();
                 statusText.setText("Status: Siap Produksi");
                 statusText.setTextColor(0xFF16C784);
                 toast("API Key Disimpan!");
@@ -134,7 +136,7 @@ public class MainActivity extends Activity {
     }
 
     void showStoryDialog() {
-        if(geminiApiKey.isEmpty()) {
+        if(apiKey.isEmpty()) {
             toast("Isi API Key dulu di menu nomor 3!");
             return;
         }
@@ -149,13 +151,13 @@ public class MainActivity extends Activity {
         builder.setPositiveButton("Generate", (dialog, which) -> {
             String prompt = input.getText().toString();
             if(prompt.isEmpty()) return;
-            statusText.setText("Menghubungi AI Gemini...");
+            statusText.setText("Menghubungi AI DeepSeek...");
             statusText.setTextColor(0xFFFFC857);
             
             new Thread(() -> {
                 try {
                     String fullPrompt = "Buatkan sinopsis cerita donghua xianxia berdasarkan ide berikut: " + prompt + ". Buatkan 3 paragraf epik.";
-                    String story = callGeminiAPI(fullPrompt);
+                    String story = callDeepSeekAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Cerita Berhasil Dibuat!");
                         statusText.setTextColor(0xFF16C784);
@@ -175,7 +177,7 @@ public class MainActivity extends Activity {
     }
 
     void showCharacterDialog() {
-        if(geminiApiKey.isEmpty()) {
+        if(apiKey.isEmpty()) {
             toast("Isi API Key dulu di menu nomor 3!");
             return;
         }
@@ -195,7 +197,7 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 try {
                     String fullPrompt = "Buatkan prompt visual detail untuk AI image generator karakter donghua 3D: " + prompt;
-                    String result = callGeminiAPI(fullPrompt);
+                    String result = callDeepSeekAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Desain Selesai!");
                         statusText.setTextColor(0xFF16C784);
@@ -215,7 +217,7 @@ public class MainActivity extends Activity {
     }
 
     void testConnection() {
-        if(geminiApiKey.isEmpty()) {
+        if(apiKey.isEmpty()) {
             toast("Isi API Key dulu!");
             return;
         }
@@ -223,9 +225,10 @@ public class MainActivity extends Activity {
         statusText.setText("Mengetes koneksi...");
         new Thread(() -> {
             try {
-                String res = callGeminiAPI("Halo, balas satu kata: SUKSES");
+                String res = callDeepSeekAPI("Halo, balas satu kata: SUKSES");
                 handler.post(() -> {
                     statusText.setText("Koneksi Berhasil!");
+                    statusText.setTextColor(0xFF16C784);
                     showResultDialog("Tes Koneksi", "AI Merespon: " + res);
                 });
             } catch (Exception e) {
@@ -238,20 +241,42 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    String callGeminiAPI(String prompt) throws Exception {
-        String urlStr = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+    // --- FUNGSI UTAMA YANG DIUBAH UNTUK DEEPSEEK ---
+    String callDeepSeekAPI(String prompt) throws Exception {
+        String urlStr = "https://api.deepseek.com/chat/completions";
         
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("X-goog-api-key", geminiApiKey); 
+        // DeepSeek menggunakan format Bearer Token
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey); 
         conn.setDoOutput(true);
 
-        String jsonInputString = "{\"contents\": [{\"parts\":[{\"text\": \"" + prompt.replace("\"", "\\\"") + "\"}]}]}";
+        // Menyusun JSON Request menggunakan JSONObject agar lebih aman
+        JSONObject jsonBody = new JSONObject();
+        jsonBody.put("model", "deepseek-chat");
+        jsonBody.put("stream", false);
 
+        JSONArray messages = new JSONArray();
+        
+        // System Prompt: Memberi tahu AI siapa dia
+        JSONObject systemMsg = new JSONObject();
+        systemMsg.put("role", "system");
+        systemMsg.put("content", "Anda adalah asisten AI kreator naskah donghua profesional. Jawab dengan bahasa Indonesia yang baik dan detail.");
+        messages.put(systemMsg);
+
+        // User Prompt: Input dari pengguna
+        JSONObject userMsg = new JSONObject();
+        userMsg.put("role", "user");
+        userMsg.put("content", prompt);
+        messages.put(userMsg);
+
+        jsonBody.put("messages", messages);
+
+        // Kirim Request
         try (OutputStream os = conn.getOutputStream()) {
-            byte[] input = jsonInputString.getBytes("utf-8");
+            byte[] input = jsonBody.toString().getBytes("utf-8");
             os.write(input, 0, input.length);
         }
 
@@ -266,6 +291,7 @@ public class MainActivity extends Activity {
             throw new Exception("HTTP " + responseCode + " : " + errorResponse.toString());
         }
 
+        // Baca Response
         BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"));
         StringBuilder response = new StringBuilder();
         String responseLine;
@@ -273,11 +299,11 @@ public class MainActivity extends Activity {
             response.append(responseLine.trim());
         }
         
+        // Parsing JSON dari DeepSeek (Format OpenAI)
         JSONObject jsonObject = new JSONObject(response.toString());
-        JSONArray candidates = jsonObject.getJSONArray("candidates");
-        JSONObject content = candidates.getJSONObject(0).getJSONObject("content");
-        JSONArray parts = content.getJSONArray("parts");
-        return parts.getJSONObject(0).getString("text");
+        JSONArray choices = jsonObject.getJSONArray("choices");
+        JSONObject message = choices.getJSONObject(0).getJSONObject("message");
+        return message.getString("content");
     }
 
     void showResultDialog(String title, String message) {
