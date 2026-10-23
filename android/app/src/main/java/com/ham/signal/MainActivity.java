@@ -31,7 +31,7 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     
-    // Variabel untuk menyimpan API Key Groq
+    // Variabel untuk API Key Groq
     private String apiKey = ""; 
 
     @Override
@@ -39,8 +39,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         
         prefs = getSharedPreferences("ai_studio_prefs", Context.MODE_PRIVATE);
-        // Key preference untuk GROQ
-        apiKey = prefs.getString("groq_api_key", "");
+        apiKey = prefs.getString("groq_api_key_baru", ""); // Key preference unik Groq
         
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xFF0B0F17); 
@@ -58,7 +57,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subTitle = new TextView(this);
-        subTitle.setText("Direct AI Engine (Groq API)");
+        subTitle.setText("Direct AI Engine (GROQ API)"); // TULISAN DIUBAH JADI GROQ
         subTitle.setTextColor(0xFF91A0B5);
         subTitle.setTextSize(14);
         subTitle.setGravity(Gravity.CENTER);
@@ -123,7 +122,7 @@ public class MainActivity extends Activity {
             String key = input.getText().toString().trim();
             if(!key.isEmpty()) {
                 apiKey = key;
-                prefs.edit().putString("groq_api_key", key).apply();
+                prefs.edit().putString("groq_api_key_baru", key).apply();
                 statusText.setText("Status: Siap Produksi");
                 statusText.setTextColor(0xFF16C784);
                 toast("API Key Groq Disimpan!");
@@ -241,11 +240,9 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    // ==========================================
-    // INI FUNGSI GROQ ASLI (BUKAN DEEPSEEK)
-    // ==========================================
+    // --- FUNGSI KHUSUS GROQ API ---
     String callGroqAPI(String prompt) throws Exception {
-        // URL RESMI GROQ
+        // URL ENDPOINT GROQ
         String urlStr = "https://api.groq.com/openai/v1/chat/completions";
         
         URL url = new URL(urlStr);
@@ -256,7 +253,7 @@ public class MainActivity extends Activity {
         conn.setDoOutput(true);
 
         JSONObject jsonBody = new JSONObject();
-        // MODEL RESMI GROQ (Llama 3.3)
+        // MODEL LLAMA DARI GROQ
         jsonBody.put("model", "llama-3.3-70b-versatile"); 
         jsonBody.put("stream", false);
 
@@ -314,4 +311,4 @@ public class MainActivity extends Activity {
     void toast(String msg) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
-                            }
+}
