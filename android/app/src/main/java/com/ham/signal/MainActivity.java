@@ -2,6 +2,7 @@ package com.ham.signal;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
@@ -30,28 +31,25 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     
-    // Kita tidak lagi menaruh API Key di sini. Aplikasi akan mengambilnya dari memori HP.
     private String geminiApiKey = ""; 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
-        // Mengambil API Key yang sudah disimpan di HP
-        prefs = getSharedPreferences("ai_studio_prefs", MODE_PRIVATE);
+        prefs = getSharedPreferences("ai_studio_prefs", Context.MODE_PRIVATE);
         geminiApiKey = prefs.getString("gemini_api_key", "");
         
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(0xFF0B0F17); // Dark Navy
+        scroll.setBackgroundColor(0xFF0B0F17); 
         
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(32, 48, 32, 32);
 
-        // Header
         TextView title = new TextView(this);
         title.setText("🐉 DONGHUA AI STUDIO");
-        title.setTextColor(0xFFE5C07B); // Gold
+        title.setTextColor(0xFFE5C07B); 
         title.setTextSize(26);
         title.setGravity(Gravity.CENTER);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -72,10 +70,9 @@ public class MainActivity extends Activity {
         statusText.setBackgroundColor(0xFF1B2433);
         root.addView(statusText);
 
-        // --- TOMBOL FITUR STUDIO ---
         addSection("FASE 1: PRA-PRODUKSI");
-        addFeatureButton("1. AI Story Generator (Xianxia)", this::showStoryDialog);
-        addFeatureButton("2. Character Studio (Desain)", this::showCharacterDialog);
+        addFeatureButton("1. AI Story Generator", this::showStoryDialog);
+        addFeatureButton("2. Character Studio", this::showCharacterDialog);
         
         addSection("PENGATURAN API");
         addFeatureButton("3. Set API Key Gemini", this::showApiKeyDialog);
@@ -111,39 +108,34 @@ public class MainActivity extends Activity {
         root.addView(btn);
     }
 
-    // ===================== PENGATURAN API KEY =====================
-
     void showApiKeyDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Masukkan Gemini API Key");
 
         EditText input = new EditText(this);
         input.setHint("Contoh: AQ.Ab8RN6...");
-        input.setText(geminiApiKey); // Tampilkan key saat ini jika ada
+        input.setText(geminiApiKey); 
         builder.setView(input);
 
         builder.setPositiveButton("Simpan", (dialog, which) -> {
             String key = input.getText().toString().trim();
             if(!key.isEmpty()) {
                 geminiApiKey = key;
-                // Simpan ke memori HP agar tidak hilang saat aplikasi ditutup
                 prefs.edit().putString("gemini_api_key", key).apply();
                 statusText.setText("Status: Siap Produksi");
                 statusText.setTextColor(0xFF16C784);
-                toast("API Key Berhasil Disimpan!");
+                toast("API Key Disimpan!");
             } else {
-                toast("API Key tidak boleh kosong.");
+                toast("API Key kosong.");
             }
         });
         builder.setNegativeButton("Batal", null);
         builder.show();
     }
 
-    // ===================== FITUR AI =====================
-
     void showStoryDialog() {
         if(geminiApiKey.isEmpty()) {
-            toast("Harap isi API Key terlebih dahulu di menu Pengaturan API!");
+            toast("Isi API Key dulu di menu nomor 3!");
             return;
         }
 
@@ -162,7 +154,7 @@ public class MainActivity extends Activity {
             
             new Thread(() -> {
                 try {
-                    String fullPrompt = "Buatkan sinopsis cerita donghua xianxia/cultivation berdasarkan ide berikut: " + prompt + ". Buatkan 3 paragraf yang epik.";
+                    String fullPrompt = "Buatkan sinopsis cerita donghua xianxia berdasarkan ide berikut: " + prompt + ". Buatkan 3 paragraf epik.";
                     String story = callGeminiAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Cerita Berhasil Dibuat!");
@@ -171,8 +163,9 @@ public class MainActivity extends Activity {
                     });
                 } catch (Exception e) {
                     handler.post(() -> {
-                        statusText.setText("Error: " + e.getMessage());
+                        statusText.setText("Error AI");
                         statusText.setTextColor(0xFFF6465D);
+                        showResultDialog("Gagal", e.getMessage());
                     });
                 }
             }).start();
@@ -183,7 +176,7 @@ public class MainActivity extends Activity {
 
     void showCharacterDialog() {
         if(geminiApiKey.isEmpty()) {
-            toast("Harap isi API Key terlebih dahulu di menu Pengaturan API!");
+            toast("Isi API Key dulu di menu nomor 3!");
             return;
         }
 
@@ -191,7 +184,7 @@ public class MainActivity extends Activity {
         builder.setTitle("Deskripsi Karakter 3D");
 
         EditText input = new EditText(this);
-        input.setHint("Contoh: Pria, rambut putih, jubah biru, pedang...");
+        input.setHint("Contoh: Pria, rambut putih, jubah biru...");
         builder.setView(input);
 
         builder.setPositiveButton("Generate", (dialog, which) -> {
@@ -201,17 +194,18 @@ public class MainActivity extends Activity {
             
             new Thread(() -> {
                 try {
-                    String fullPrompt = "Buatkan deskripsi visual (prompt untuk AI image generator) untuk karakter donghua 3D bergaya sinematik berikut: " + prompt;
+                    String fullPrompt = "Buatkan prompt visual detail untuk AI image generator karakter donghua 3D: " + prompt;
                     String result = callGeminiAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Desain Selesai!");
                         statusText.setTextColor(0xFF16C784);
-                        showResultDialog("Prompt Desain Karakter", result);
+                        showResultDialog("Prompt Desain", result);
                     });
                 } catch (Exception e) {
                     handler.post(() -> {
-                        statusText.setText("Error: " + e.getMessage());
+                        statusText.setText("Error AI");
                         statusText.setTextColor(0xFFF6465D);
+                        showResultDialog("Gagal", e.getMessage());
                     });
                 }
             }).start();
@@ -222,28 +216,27 @@ public class MainActivity extends Activity {
 
     void testConnection() {
         if(geminiApiKey.isEmpty()) {
-            toast("Harap isi API Key terlebih dahulu!");
+            toast("Isi API Key dulu!");
             return;
         }
         
         statusText.setText("Mengetes koneksi...");
         new Thread(() -> {
             try {
-                String res = callGeminiAPI("Halo, balas dengan satu kata: SUKSES");
+                String res = callGeminiAPI("Halo, balas satu kata: SUKSES");
                 handler.post(() -> {
                     statusText.setText("Koneksi Berhasil!");
                     showResultDialog("Tes Koneksi", "AI Merespon: " + res);
                 });
             } catch (Exception e) {
                 handler.post(() -> {
-                    statusText.setText("Error Koneksi: " + e.getMessage());
+                    statusText.setText("Error Koneksi");
                     statusText.setTextColor(0xFFF6465D);
+                    showResultDialog("Gagal", e.getMessage());
                 });
             }
         }).start();
     }
-
-    // ===================== KONEKSI KE GEMINI =====================
 
     String callGeminiAPI(String prompt) throws Exception {
         String urlStr = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
@@ -251,9 +244,8 @@ public class MainActivity extends Activity {
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
-        
         conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("X-goog-api-key", geminiApiKey); // Menggunakan key dari HP
+        conn.setRequestProperty("X-goog-api-key", geminiApiKey); 
         conn.setDoOutput(true);
 
         String jsonInputString = "{\"contents\": [{\"parts\":[{\"text\": \"" + prompt.replace("\"", "\\\"") + "\"}]}]}";
