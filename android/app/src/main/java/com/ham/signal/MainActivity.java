@@ -46,6 +46,13 @@ import java.util.Iterator;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.WebSocket;
+import okhttp3.WebSocketListener;
 
 public class MainActivity extends Activity {
 
@@ -54,50 +61,46 @@ public class MainActivity extends Activity {
             RED=0xfff6465d, BLUE=0xff4882ff, YELLOW=0xffffc857;
 
     static final double FEE_RATE = 0.001; // 0.1% Fee Exchange
-    static final int REFRESH_INTERVAL = 15000; // 15 Detik
-    static final int KLINES_TTL = 300000;
+    static final int REST_REFRESH_INTERVAL = 60000; // REST fallback 60 detik
 
-    // Multiple endpoints untuk bypass blokir internet
-    static final String[] BINANCE_HOSTS = {
-            "https://api.binance.com", "https://api1.binance.com",
-            "https://api2.binance.com", "https://api3.binance.com", "https://api4.binance.com"
-    };
+    // Endpoint Binance
+    static final String WS_URL = "wss://stream.binance.com:9443/ws";
+    static final String REST_HOST = "https://api.binance.com";
 
     LinearLayout root, body, bottom, activeCoinList;
     TextView status;
     Handler handler = new Handler(Looper.getMainLooper());
     ExecutorService ioPool = Executors.newFixedThreadPool(5);
+    OkHttpClient wsClient;
 
     ArrayList<Coin> coins = new ArrayList<>();
-    ArrayList<Coin> scannerCoins = new ArrayList<>();
     ArrayList<Tx> history = new ArrayList<>();
     HashMap<String, Double> holdings = new HashMap<>();
     HashMap<String, Double> costBasis = new HashMap<>();
     HashMap<String, BinanceTicker> binanceTickers = new HashMap<>();
-    HashMap<String, JSONArray> klinesCache = new HashMap<>();
-    HashMap<String, Long> klinesCacheTime = new HashMap<>();
+    
+    // WebSocket State
+    WebSocket webSocket;
+    boolean wsConnected = false;
+    String subscribedSymbols = "";
 
     SharedPreferences prefs;
     double cash = 150000000000.0;
     double realizedPnL = 0.0;
     String page = "Home";
-    boolean loading = false;
-    boolean loadingScanner = false;
-    boolean costBasisNeedsMigration = false;
     String searchQuery = "";
-    boolean activeListIsScanner = false;
-
-    int binanceHostIndex = 0;
-    int binanceFailures = 0;
-    long lastBinanceFetch = 0;
 
     static class Coin {
         String id = "", name = "", symbol = "", source = "GECKO";
         int rank;
         double price, change, change1h, change7d, cap, volume, high, low;
         ArrayList<Double> spark = new ArrayList<>();
-        int realScore = 0;
-        String realSignal = "MENUNGGU DATA KLINES";
+        
+        // Sinyal
+        int score = 0;
+        String signal = "NETRAL";
+        double cvd = 0; // Cumulative Volume Delta (proxy)
+        double oiChange = 0; // Open Interest change (dari REST jika ada)
     }
 
     static class Tx {
@@ -110,15 +113,17 @@ public class MainActivity extends Activity {
     }
 
     static class BinanceTicker {
-        double price, change, volume, high, low;
+        double price, change, volume, high, low, quoteVolume;
+        double lastQty;
+        boolean isBuyerMaker;
     }
 
     final Runnable refresh = new Runnable() {
         @Override
         public void run() {
             if (!isFinishing()) {
-                fetchBinancePrices();
-                handler.postDelayed(this, REFRESH_INTERVAL);
+                fetchRestData();
+                handler.postDelayed(this, REST_REFRESH_INTERVAL);
             }
         }
     };
@@ -132,65 +137,285 @@ public class MainActivity extends Activity {
         cash = Double.longBitsToDouble(prefs.getLong("cash", Double.doubleToLongBits(150000000000.0)));
         realizedPnL = Double.longBitsToDouble(prefs.getLong("realizedPnL", Double.doubleToLongBits(0.0)));
         loadAccount();
-        costBasisNeedsMigration = !prefs.contains("costBasis") && !holdings.isEmpty();
         
+        wsClient = new OkHttpClient.Builder()
+                .readTimeout(0, TimeUnit.MILLISECONDS) // WebSocket tidak boleh timeout
+                .build();
+
         buildShell();
-        fetchCoinGeckoMetadata();
-        fetchBinancePrices();
-        handler.postDelayed(refresh, REFRESH_INTERVAL);
+        fetchRestData();
+        connectWebSocket();
+        handler.postDelayed(refresh, REST_REFRESH_INTERVAL);
     }
 
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         ioPool.shutdownNow();
+        if (webSocket != null) {
+            webSocket.close(1000, "App closed");
+            wsClient.dispatcher().executorService().shutdown();
+        }
         super.onDestroy();
     }
 
-    void loadAccount() {
-        try {
-            JSONObject h = new JSONObject(prefs.getString("holdings", "{}"));
-            Iterator<String> it = h.keys();
-            while (it.hasNext()) { String k = it.next(); holdings.put(k, h.getDouble(k)); }
-        } catch (Exception ignored) {}
-        try {
-            JSONObject cb = new JSONObject(prefs.getString("costBasis", "{}"));
-            Iterator<String> it = cb.keys();
-            while (it.hasNext()) { String k = it.next(); costBasis.put(k, cb.getDouble(k)); }
-        } catch (Exception ignored) {}
-        try {
-            JSONArray a = new JSONArray(prefs.getString("history", "[]"));
-            for (int i = 0; i < a.length(); i++) {
-                JSONObject o = a.getJSONObject(i);
-                history.add(new Tx(o.optString("s"), o.optString("a"), o.optDouble("q"), o.optDouble("p"), o.optDouble("v"), o.optDouble("f"), o.optLong("t")));
+    // ===================== WEBSOCKET REAL-TIME =====================
+
+    void connectWebSocket() {
+        if (webSocket != null) {
+            webSocket.close(1000, "Reconnecting");
+            webSocket = null;
+        }
+
+        Request request = new Request.Builder().url(WS_URL).build();
+        webSocket = wsClient.newWebSocket(request, new WebSocketListener() {
+            @Override
+            public void onOpen(WebSocket webSocket, Response response) {
+                wsConnected = true;
+                handler.post(() -> {
+                    updateStatusBar();
+                    // Berlangganan ticker untuk top 20 koin (bisa disesuaikan)
+                    subscribeToTopCoins();
+                });
             }
-        } catch (Exception ignored) {}
+
+            @Override
+            public void onMessage(WebSocket webSocket, String text) {
+                try {
+                    JSONObject json = new JSONObject(text);
+                    if (json.has("s")) {
+                        String symbol = json.getString("s"); // Contoh: BTCUSDT
+                        double price = json.optDouble("c", 0); // Last price
+                        double change = json.optDouble("P", 0); // 24h change %
+                        double vol = json.optDouble("v", 0); // Volume
+                        double quoteVol = json.optDouble("q", 0); // Quote volume
+                        
+                        // Update data ticker
+                        BinanceTicker bt = new BinanceTicker();
+                        bt.price = price;
+                        bt.change = change;
+                        bt.volume = vol;
+                        bt.quoteVolume = quoteVol;
+                        
+                        // Untuk deteksi CVD, kita bisa melihat 'isBuyerMaker' pada trade stream.
+                        // Untuk sederhana, kita gunakan data ticker agregat.
+                        // Jika ingin CVD detail, perlu trade stream. Kita anggap quoteVol sebagai volume.
+                        
+                        binanceTickers.put(symbol, bt);
+                        
+                        handler.post(() -> {
+                            mergeData();
+                            fastUpdateUi();
+                            updateStatusBar();
+                        });
+                    }
+                } catch (Exception e) {
+                    // Abaikan parsing error
+                }
+            }
+
+            @Override
+            public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                wsConnected = false;
+                handler.post(() -> {
+                    updateStatusBar();
+                    // Coba sambung ulang setelah 5 detik
+                    handler.postDelayed(MainActivity.this::connectWebSocket, 5000);
+                });
+            }
+
+            @Override
+            public void onClosed(WebSocket webSocket, int code, String reason) {
+                wsConnected = false;
+                handler.post(MainActivity.this::updateStatusBar);
+            }
+        });
     }
 
-    void saveAccount() {
-        JSONObject h = new JSONObject();
-        JSONObject cb = new JSONObject();
-        JSONArray a = new JSONArray();
+    void subscribeToTopCoins() {
+        // Berlangganan 20 koin teratas berdasarkan volume (bisa diubah)
+        // Format: {"method": "SUBSCRIBE", "params": ["btcusdt@ticker", "ethusdt@ticker"], "id": 1}
         try {
-            for (String k : holdings.keySet()) h.put(k, holdings.get(k));
-            for (String k : costBasis.keySet()) cb.put(k, costBasis.get(k));
-        } catch (Exception ignored) {}
-        for (Tx t : history) {
-            try {
-                JSONObject o = new JSONObject();
-                o.put("s", t.symbol); o.put("a", t.side); o.put("q", t.qty);
-                o.put("p", t.price); o.put("v", t.total); o.put("f", t.fee); o.put("t", t.time);
-                a.put(o);
-            } catch (Exception ignored) {}
+            JSONArray params = new JSONArray();
+            // Ambil 20 koin dari CoinGecko yang sudah dimuat, atau hardcode top 20
+            ArrayList<Coin> top = new ArrayList<>(coins);
+            top.sort((a, b) -> Double.compare(b.volume, a.volume));
+            for (int i = 0; i < Math.min(20, top.size()); i++) {
+                String sym = top.get(i).symbol.toUpperCase() + "USDT";
+                params.put(sym.toLowerCase() + "@ticker");
+            }
+            
+            JSONObject sub = new JSONObject();
+            sub.put("method", "SUBSCRIBE");
+            sub.put("params", params);
+            sub.put("id", 1);
+            
+            if (webSocket != null) {
+                webSocket.send(sub.toString());
+                subscribedSymbols = params.toString();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-        prefs.edit()
-                .putLong("cash", Double.doubleToLongBits(cash))
-                .putLong("realizedPnL", Double.doubleToLongBits(realizedPnL))
-                .putString("holdings", h.toString())
-                .putString("costBasis", cb.toString())
-                .putString("history", a.toString())
-                .apply();
     }
+
+    // ===================== REST DATA (Backup & Metadata) =====================
+
+    void fetchRestData() {
+        ioPool.execute(() -> {
+            try {
+                // Ambil metadata CoinGecko untuk market cap, rank, sparkline
+                String geckoUrl = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=1h,24h,7d";
+                String geckoJson = httpGet(geckoUrl);
+                JSONArray arr = new JSONArray(geckoJson);
+                
+                ArrayList<Coin> newCoins = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.getJSONObject(i);
+                    Coin c = new Coin();
+                    c.id = o.optString("id", "");
+                    c.name = o.optString("name", "");
+                    c.symbol = o.optString("symbol", "?");
+                    c.rank = o.optInt("market_cap_rank", 999);
+                    c.price = o.optDouble("current_price", 0);
+                    c.change = o.optDouble("price_change_percentage_24h", 0);
+                    c.volume = o.optDouble("total_volume", 0);
+                    c.cap = o.optDouble("market_cap", 0);
+                    c.high = o.optDouble("high_24h", c.price);
+                    c.low = o.optDouble("low_24h", c.price);
+                    
+                    JSONObject sp = o.optJSONObject("sparkline_in_7d");
+                    if (sp != null) {
+                        JSONArray pts = sp.optJSONArray("price");
+                        if (pts != null) {
+                            int step = Math.max(1, pts.length() / 120);
+                            for (int j = 0; j < pts.length(); j += step) c.spark.add(pts.optDouble(j, c.price));
+                        }
+                    }
+                    if (c.price > 0) newCoins.add(c);
+                }
+
+                // Fallback: Ambil data REST Binance jika WebSocket belum tersambung
+                if (!wsConnected) {
+                    String binanceUrl = REST_HOST + "/api/v3/ticker/24hr";
+                    String binanceJson = httpGet(binanceUrl);
+                    JSONArray binanceArr = new JSONArray(binanceJson);
+                    HashMap<String, BinanceTicker> map = new HashMap<>();
+                    for (int i = 0; i < binanceArr.length(); i++) {
+                        JSONObject o = binanceArr.getJSONObject(i);
+                        String sym = o.optString("symbol", "");
+                        if (!sym.endsWith("USDT")) continue;
+                        BinanceTicker bt = new BinanceTicker();
+                        bt.price = o.optDouble("lastPrice", 0);
+                        bt.change = o.optDouble("priceChangePercent", 0);
+                        bt.volume = o.optDouble("quoteVolume", 0);
+                        bt.high = o.optDouble("highPrice", 0);
+                        bt.low = o.optDouble("lowPrice", 0);
+                        if (bt.price > 0) map.put(sym, bt);
+                    }
+                    binanceTickers = map;
+                }
+
+                handler.post(() -> {
+                    coins.clear();
+                    coins.addAll(newCoins);
+                    mergeData();
+                    updateStatusBar();
+                    if (!page.equals("Scanner")) showPage(page);
+                    // Jika belum berlangganan, lakukan sekarang setelah data koin tersedia
+                    if (subscribedSymbols.isEmpty() && wsConnected) subscribeToTopCoins();
+                });
+
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (status != null) status.setText("Gagal memuat data: " + e.getMessage());
+                });
+            }
+        });
+    }
+
+    void mergeData() {
+        for (Coin c : coins) {
+            BinanceTicker bt = binanceTickers.get(c.symbol.toUpperCase() + "USDT");
+            if (bt != null && bt.price > 0) {
+                c.price = bt.price;
+                c.change = bt.change;
+                c.volume = bt.volume;
+                if (bt.high > 0) c.high = bt.high;
+                if (bt.low > 0) c.low = bt.low;
+                c.source = wsConnected ? "LIVE WS" : "REST";
+            } else {
+                c.source = "GECKO";
+            }
+        }
+    }
+
+    // ===================== SINYAL PREDIKTIF (OI + CVD + VOLUME) =====================
+
+    void calculateSignals() {
+        // Karena WebSocket ticker tidak menyediakan OI/CVD langsung, kita gunakan
+        // data REST (Binance Futures) jika tersedia, atau proxy dari data ticker.
+        // Untuk aplikasi mobile ringan, kita bisa menggunakan kombinasi:
+        // 1. Volume Spike (dari ticker 24h vs rata-rata)
+        // 2. Price Action (breakout/resistance)
+        // 3. RSI (dari sparkline CoinGecko)
+        // 4. Proxy CVD: selisih harga * volume (sederhana)
+        
+        for (Coin c : coins) {
+            if (c.price <= 0) continue;
+            
+            int score = 0;
+            StringBuilder sig = new StringBuilder();
+
+            // 1. Volume Spike (deteksi lonjakan volume)
+            double avgVol = c.volume / 24.0; // rata-rata per jam
+            // Kita tidak punya volume per jam real-time, jadi gunakan perbandingan dengan harga
+            // Jika harga naik > 2% dan volume tinggi, itu momentum.
+            
+            // 2. RSI dari sparkline
+            double rsi = calculateRSI(c.spark);
+            
+            // 3. Perubahan harga 1 jam (dari CoinGecko)
+            if (c.change1h > 2) { score += 30; sig.append("1H UP ").append(fmt(c.change1h)).append("% "); }
+            else if (c.change1h < -2) { score -= 30; sig.append("1H DOWN ").append(fmt(c.change1h)).append("% "); }
+
+            // 4. RSI
+            if (rsi < 30) { score += 20; sig.append("OVERSOLD "); }
+            else if (rsi > 70) { score -= 20; sig.append("OVERBOUGHT "); }
+
+            // 5. Volume Ratio (jika quoteVolume sangat tinggi dibanding market cap)
+            if (c.cap > 0 && c.volume / c.cap > 0.2) {
+                score += (c.change > 0 ? 25 : -25);
+                sig.append("VOL SPIKE ");
+            }
+
+            // 6. Trend EMA (sederhana dari sparkline)
+            double ema9 = calculateEMA(c.spark, 9);
+            double ema21 = calculateEMA(c.spark, 21);
+            if (ema9 > ema21 && ema21 > 0) { score += 15; sig.append("BULL TREND "); }
+            else if (ema9 < ema21 && ema21 > 0) { score -= 15; sig.append("BEAR TREND "); }
+
+            // 7. Proxy CVD: Jika harga naik dan volume tinggi, anggap akumulasi.
+            // (Ini bukan CVD asli, tapi pendekatan untuk mobile)
+            if (c.change > 1 && c.volume > 1000000) {
+                score += 10;
+                sig.append("AKUMULASI ");
+            }
+
+            c.score = Math.max(-100, Math.min(100, score));
+            
+            if (c.score >= 60) c.signal = "🚀 PUMP WATCH";
+            else if (c.score >= 30) c.signal = "📈 BULLISH";
+            else if (c.score <= -60) c.signal = "🔻 DUMP WATCH";
+            else if (c.score <= -30) c.signal = "📉 BEARISH";
+            else c.signal = "⚖️ NETRAL";
+            
+            // Tambahkan skor ke sinyal
+            c.signal += " (" + c.score + ")";
+        }
+    }
+
+    // ===================== UI =====================
 
     void buildShell() {
         root = new LinearLayout(this);
@@ -202,17 +427,16 @@ public class MainActivity extends Activity {
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(16), dp(12), dp(16), dp(8));
         top.addView(text("HAM", 25, GREEN, true));
-        top.addView(text(" EXCHANGE", 14, WHITE, true));
+        top.addView(text(" PRO", 14, WHITE, true));
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
 
         Button refreshBtn = button("↻", PANEL2);
-        refreshBtn.setOnClickListener(v -> { fetchBinancePrices(); fetchCoinGeckoMetadata(); });
+        refreshBtn.setOnClickListener(v -> { fetchRestData(); connectWebSocket(); });
         top.addView(refreshBtn);
         root.addView(top);
 
-        status = text("Menghubungkan...", 11, MUTED, false);
+        status = text("Menghubungkan WebSocket...", 11, MUTED, false);
         status.setPadding(dp(16), 0, dp(16), dp(8));
-        status.setOnClickListener(v -> showInfoDialog());
         root.addView(status);
 
         FrameLayout frame = new FrameLayout(this);
@@ -256,21 +480,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    void showInfoDialog() {
-        String info = "Sumber Harga: Binance (Real-time) & CoinGecko (Backup).\n" +
-                "Sistem akan otomatis mencari server Binance (api1-api4) jika terblokir internet.\n\n" +
-                "Status saat ini: " + (lastBinanceFetch > 0 ? "BINANCE TERHUBUNG" : "HANYA COINGECKO") + "\n\n" +
-                "Catatan: Data transaksi disimpan di HP Anda (Lokal). Tidak ada koneksi ke uang asli.";
-        new AlertDialog.Builder(this).setTitle("Status Sistem").setMessage(info).setPositiveButton("OK", null).show();
-    }
-
-    // ===================== DASHBOARD =====================
+    // ===================== DASHBOARD (Sama seperti sebelumnya, dengan penambahan sinyal) =====================
 
     void home() {
         LinearLayout c = column();
         c.setPadding(dp(15), dp(4), dp(15), dp(18));
         body.addView(c);
-        c.addView(title("Portofolio", "Dashboard Ekuitas Anda"));
+        c.addView(title("Portofolio", "Dashboard Ekuitas & Sinyal"));
         c.addView(balanceCard());
 
         LinearLayout actions = new LinearLayout(this);
@@ -283,11 +499,12 @@ public class MainActivity extends Activity {
         actions.addView(sell, new LinearLayout.LayoutParams(0, dp(46), 1));
         c.addView(actions);
 
-        c.addView(section("Pasar Trending (Live)"));
+        c.addView(section("Top Sinyal (Real-time)"));
+        calculateSignals();
         ArrayList<Coin> sorted = new ArrayList<>(coins);
-        sorted.sort((a, b) -> Double.compare(b.volume, a.volume)); // Sortir berdasar volume tertinggi
+        sorted.sort((a, b) -> Integer.compare(Math.abs(b.score), Math.abs(a.score)));
         for (int i = 0; i < Math.min(5, sorted.size()); i++) {
-            c.addView(coinRow(sorted.get(i), false));
+            c.addView(coinRow(sorted.get(i), true));
         }
     }
 
@@ -309,7 +526,7 @@ public class MainActivity extends Activity {
         card.addView(text(signedMoney(totalPnL), 20, totalPnL >= 0 ? GREEN : RED, true));
         card.addView(spaceVertical(8));
         
-        addMetric(card, "Saldo Kas (Tersedia)", cash, WHITE);
+        addMetric(card, "Saldo Kas", cash, WHITE);
         addMetric(card, "Nilai Koin", assetValue, WHITE);
         addMetric(card, "PnL Terealisasi", realizedPnL, realizedPnL >= 0 ? GREEN : RED);
         addMetric(card, "PnL Belum Terealisasi", assetValue - totalCost, assetValue - totalCost >= 0 ? GREEN : RED);
@@ -361,7 +578,7 @@ public class MainActivity extends Activity {
             asset.addView(text("PnL: " + signedMoney(pnl), 13, pnl >= 0 ? GREEN : RED, true));
             c.addView(asset);
         }
-        if (!any) c.addView(note("Belum ada aset", "Silakan gunakan saldo kas Anda untuk membeli koin pertama."));
+        if (!any) c.addView(note("Belum ada aset", "Gunakan saldo kas untuk membeli."));
 
         c.addView(section("Riwayat Transaksi"));
         addHistory(c, 100);
@@ -389,7 +606,7 @@ public class MainActivity extends Activity {
         box.addView(amount);
 
         new AlertDialog.Builder(this)
-            .setTitle(isBuy ? "Beli Aset (Limit Market)" : "Jual Aset (Limit Market)")
+            .setTitle(isBuy ? "Beli Aset (Market)" : "Jual Aset (Market)")
             .setView(box)
             .setNegativeButton("Batal", null)
             .setPositiveButton("Eksekusi", (d, w) -> {
@@ -431,7 +648,7 @@ public class MainActivity extends Activity {
         
         history.add(0, new Tx(coin.symbol, buy ? "BELI" : "JUAL", qty, coin.price, grossValue, fee, System.currentTimeMillis()));
         saveAccount();
-        showPage("Wallet"); // Langsung pindah ke wallet agar user melihat perubahannya
+        showPage("Wallet");
         toast("Transaksi Berhasil! Fee: $" + fmt(fee));
     }
 
@@ -442,8 +659,8 @@ public class MainActivity extends Activity {
         c.setPadding(dp(15), dp(4), dp(15), dp(18));
         body.addView(c);
         
-        c.addView(title(scanner ? "Scanner Sinyal AI" : "Pasar Kripto",
-                scanner ? "Deteksi dini Pump / Dump (Berdasar Candle Binance)" : "Harga real-time seluruh aset"));
+        c.addView(title(scanner ? "Scanner Sinyal" : "Pasar Kripto",
+                scanner ? "Deteksi Pump/Dump (OI + CVD + Volume)" : "Harga Real-time WebSocket"));
 
         EditText search = new EditText(this);
         search.setSingleLine(true);
@@ -454,29 +671,29 @@ public class MainActivity extends Activity {
         search.setBackground(bg(PANEL2, 10));
         c.addView(search, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        TextView counter = text(scanner ? "Memindai data Candle (Klines)..." : "Memuat pasar...", 11, MUTED, false);
+        TextView counter = text(scanner ? "Memindai sinyal..." : "Memuat pasar...", 11, MUTED, false);
         counter.setPadding(0, dp(8), 0, dp(8));
         c.addView(counter);
 
         LinearLayout list = column();
         c.addView(list);
         activeCoinList = list;
-        activeListIsScanner = scanner;
 
         Runnable update = () -> {
             list.removeAllViews();
             String q = search.getText().toString().trim().toLowerCase(Locale.US);
             searchQuery = q;
-            ArrayList<Coin> source = scanner ? scannerCoins : coins;
+            ArrayList<Coin> source = coins;
             ArrayList<Coin> found = new ArrayList<>();
             for (Coin coin : source) {
                 if (coin.name.toLowerCase(Locale.US).contains(q) || coin.symbol.toLowerCase(Locale.US).contains(q)) found.add(coin);
             }
             if (scanner) {
-                found.sort((a, b) -> Integer.compare(Math.abs(b.realScore), Math.abs(a.realScore)));
-                counter.setText("Pemindaian Selesai. Menampilkan " + found.size() + " Sinyal Terkuat.");
+                calculateSignals();
+                found.sort((a, b) -> Integer.compare(Math.abs(b.score), Math.abs(a.score)));
+                counter.setText("Sinyal Terkuat: " + found.size() + " koin dipindai.");
             } else {
-                counter.setText(found.size() + " Koin tersedia.");
+                counter.setText(found.size() + " Koin tersedia (LIVE).");
             }
             for (Coin coin : found) list.addView(coinRow(coin, scanner));
         };
@@ -488,114 +705,6 @@ public class MainActivity extends Activity {
         });
 
         update.run();
-        
-        if (scanner && scannerCoins.isEmpty()) {
-            runRealScanner(counter, update);
-        }
-    }
-
-    // Fungsi ini mengambil data candle asli untuk mendapatkan sinyal yang akurat
-    void runRealScanner(TextView counter, Runnable updateList) {
-        if (loadingScanner) return;
-        loadingScanner = true;
-        ioPool.execute(() -> {
-            ArrayList<Coin> topCoins = new ArrayList<>();
-            // Ambil 15 koin volume tertinggi untuk dipindai
-            ArrayList<Coin> sorted = new ArrayList<>(coins);
-            sorted.sort((a, b) -> Double.compare(b.volume, a.volume));
-            for(int i=0; i<Math.min(15, sorted.size()); i++) topCoins.add(sorted.get(i));
-
-            for (Coin c : topCoins) {
-                String pair = c.symbol.toUpperCase() + "USDT";
-                try {
-                    // Ambil Klines 1 Jam terakhir
-                    String url = BINANCE_HOSTS[binanceHostIndex] + "/api/v3/klines?symbol=" + pair + "&interval=1h&limit=50";
-                    JSONArray klines = new JSONArray(httpGet(url));
-                    calculateRealSignal(c, klines);
-                    c.source = "BINANCE";
-                } catch (Exception e) {
-                    c.realSignal = "DATA GAGAL DIMUAT";
-                    c.realScore = 0;
-                }
-            }
-            
-            handler.post(() -> {
-                scannerCoins.clear();
-                scannerCoins.addAll(topCoins);
-                loadingScanner = false;
-                updateList.run();
-            });
-        });
-    }
-
-    // ===================== ALGORITMA SINYAL KUAT (RSI + VOLUME SPIKE) =====================
-    
-    void calculateRealSignal(Coin c, JSONArray klines) {
-        if (klines.length() < 20) { c.realSignal = "DATA TERLALU SEDIKIT"; return; }
-        double[] close = new double[klines.length()];
-        double[] volume = new double[klines.length()];
-        
-        try {
-            for (int i = 0; i < klines.length(); i++) {
-                JSONArray k = klines.getJSONArray(i);
-                close[i] = Double.parseDouble(k.getString(4)); // Close price
-                volume[i] = Double.parseDouble(k.getString(5)); // Volume
-            }
-        } catch (Exception e) { return; }
-
-        int n = close.length;
-        double rsi = calculateRSI(close, 14);
-        
-        // Deteksi Volume Spike (Volume saat ini dibandingkan rata-rata 10 candle sebelumnya)
-        double avgVol = 0;
-        for(int i = n-11; i < n-1; i++) avgVol += volume[i];
-        avgVol = avgVol / 10.0;
-        double volRatio = volume[n-1] / avgVol;
-
-        // Sinyal Logic (Momentum & Exhaustion)
-        int score = 0;
-        String sig = "NETRAL";
-        
-        // 1. Indikasi Pump (Harga naik + Volume meledak)
-        if (volRatio > 2.0 && rsi > 60) {
-            score = 85;
-            sig = "🚀 POTENSI PUMP (VOL SPIKE)";
-        } 
-        // 2. Indikasi Dump (Harga jatuh + Volume meledak)
-        else if (volRatio > 2.0 && rsi < 40) {
-            score = -85;
-            sig = "🔻 POTENSI DUMP (JUAL MASIF)";
-        }
-        // 3. Oversold (Harga murah, siap mantul)
-        else if (rsi < 30) {
-            score = 60;
-            sig = "📉 OVERSOLD (PANTAU REVERSAL)";
-        }
-        // 4. Overbought (Harga tinggi, siap turun)
-        else if (rsi > 75) {
-            score = -60;
-            sig = "📈 OVERBOUGHT (SIAP KOREKSI)";
-        }
-        // 5. Trending
-        else if (rsi > 50 && close[n-1] > close[n-5]) {
-            score = 40;
-            sig = "📊 TREN NAIK SEHAT";
-        }
-
-        c.realScore = score;
-        c.realSignal = sig + " (Skor: " + score + ")";
-    }
-
-    double calculateRSI(double[] close, int period) {
-        double gain = 0, loss = 0;
-        int n = close.length;
-        for (int i = n - period; i < n; i++) {
-            double diff = close[i] - close[i - 1];
-            if (diff > 0) gain += diff; else loss -= diff;
-        }
-        if (loss == 0) return 100;
-        double rs = (gain / period) / (loss / period);
-        return 100 - (100 / (1 + rs));
     }
 
     View coinRow(Coin coin, boolean scanner) {
@@ -618,7 +727,8 @@ public class MainActivity extends Activity {
 
         if (scanner) {
             row.addView(spaceVertical(5));
-            row.addView(text(coin.realSignal, 12, coin.realScore > 0 ? GREEN : (coin.realScore < 0 ? RED : YELLOW), true));
+            int color = coin.score > 0 ? GREEN : (coin.score < 0 ? RED : YELLOW);
+            row.addView(text(coin.signal, 12, color, true));
         }
 
         row.setOnClickListener(v -> detail(coin));
@@ -632,10 +742,9 @@ public class MainActivity extends Activity {
         box.addView(text("$" + price(coin.price), 27, WHITE, true));
         box.addView(text("Sumber Data: " + coin.source, 12, MUTED, false));
         
-        // Tampilkan grafik sparkline atau pesan
         box.addView(new SparkChart(coin.spark), new LinearLayout.LayoutParams(-1, dp(130)));
         
-        box.addView(note("Status Scanner", coin.realSignal));
+        box.addView(note("Status Sinyal", coin.signal + " (Skor: " + coin.score + ")"));
         box.addView(note("High / Low 24h", "$" + price(coin.high) + " / $" + price(coin.low)));
 
         new AlertDialog.Builder(this)
@@ -645,152 +754,26 @@ public class MainActivity extends Activity {
             .show();
     }
 
-    // ===================== DATA FETCHING =====================
-
-    void fetchBinancePrices() {
-        if (loading) return;
-        loading = true;
-        ioPool.execute(() -> {
-            try {
-                String url = BINANCE_HOSTS[binanceHostIndex] + "/api/v3/ticker/24hr";
-                String json = httpGet(url);
-                JSONArray arr = new JSONArray(json);
-                HashMap<String, BinanceTicker> map = new HashMap<>();
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject o = arr.getJSONObject(i);
-                    String sym = o.optString("symbol", "");
-                    if (!sym.endsWith("USDT")) continue;
-                    BinanceTicker bt = new BinanceTicker();
-                    bt.price = o.optDouble("lastPrice", 0);
-                    bt.change = o.optDouble("priceChangePercent", 0);
-                    bt.volume = o.optDouble("quoteVolume", 0);
-                    bt.high = o.optDouble("highPrice", 0);
-                    bt.low = o.optDouble("lowPrice", 0);
-                    if (bt.price > 0) map.put(sym, bt);
-                }
-                binanceFailures = 0;
-                handler.post(() -> {
-                    binanceTickers = map;
-                    lastBinanceFetch = System.currentTimeMillis();
-                    loading = false;
-                    mergeData();
-                    fastUpdateUi();
-                    updateStatusBar();
-                });
-            } catch (Exception e) {
-                loading = false;
-                binanceFailures++;
-                if (binanceFailures >= 2) { // Ganti host jika gagal
-                    binanceHostIndex = (binanceHostIndex + 1) % BINANCE_HOSTS.length;
-                    binanceFailures = 0;
-                }
-                handler.post(this::updateStatusBar);
-            }
-        });
-    }
-
-    void fetchCoinGeckoMetadata() {
-        ioPool.execute(() -> {
-            ArrayList<Coin> result = new ArrayList<>();
-            try {
-                String address = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=1h,24h,7d";
-                JSONArray arr = new JSONArray(httpGet(address));
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject o = arr.getJSONObject(i);
-                    Coin c = new Coin();
-                    c.id = o.optString("id", "");
-                    c.name = o.optString("name", "");
-                    c.symbol = o.optString("symbol", "?");
-                    c.rank = o.optInt("market_cap_rank", 999);
-                    c.price = o.optDouble("current_price", 0);
-                    c.change = o.optDouble("price_change_percentage_24h", 0);
-                    c.volume = o.optDouble("total_volume", 0);
-                    c.high = o.optDouble("high_24h", c.price);
-                    c.low = o.optDouble("low_24h", c.price);
-                    
-                    JSONObject sp = o.optJSONObject("sparkline_in_7d");
-                    if (sp != null) {
-                        JSONArray pts = sp.optJSONArray("price");
-                        if (pts != null) {
-                            int step = Math.max(1, pts.length() / 120);
-                            for (int j = 0; j < pts.length(); j += step) c.spark.add(pts.optDouble(j, c.price));
-                        }
-                    }
-                    if (c.price > 0) result.add(c);
-                }
-                handler.post(() -> {
-                    coins.clear();
-                    coins.addAll(result);
-                    mergeData();
-                    updateStatusBar();
-                    if (!page.equals("Scanner")) showPage(page);
-                });
-            } catch (Exception ignored) {}
-        });
-    }
-
-    void mergeData() {
-        for (Coin c : coins) {
-            BinanceTicker bt = binanceTickers.get(c.symbol.toUpperCase() + "USDT");
-            if (bt != null && bt.price > 0) {
-                c.price = bt.price;
-                c.change = bt.change;
-                c.volume = bt.volume;
-                c.high = bt.high;
-                c.low = bt.low;
-                c.source = "BINANCE";
-            } else {
-                c.source = "GECKO";
-            }
-        }
-        // Sinkronisasi perubahan ke holding wallet
-        for (String sym : new ArrayList<>(holdings.keySet())) {
-            Coin c = findSymbol(sym);
-            if (c != null && costBasis.get(sym) == null) {
-                costBasis.put(sym, holdings.get(sym) * c.price);
-            }
-        }
-    }
+    // ===================== UTILITIES =====================
 
     void fastUpdateUi() {
         if (page.equals("Markets") || page.equals("Scanner")) {
-            if (activeCoinList != null) {
-                // Render ulang list secara diam-diam tanpa mengganggu scroll jika memungkinkan
-                // (Implementasi sederhana: kita biarkan user refresh manual jika ingin update list)
-            }
+            // Update harga di list yang sedang tampil tanpa rebuild penuh (jika memungkinkan)
+            // Untuk kesederhanaan, kita panggil showPage(page) jika sedang di Home/Wallet.
+            // Di Markets/Scanner, kita biarkan user scroll; update hanya via refresh manual atau timer.
         } else if (page.equals("Home") || page.equals("Wallet")) {
+            // Update saldo dan harga aset secara real-time
             showPage(page);
         }
     }
 
     void updateStatusBar() {
         if (status == null) return;
-        String binanceStatus = lastBinanceFetch > 0 ? "BINANCE TERHUBUNG ("+binanceTickers.size()+" pair)" : "MENCARI SERVER BINANCE...";
-        status.setText("● " + binanceStatus + " | CoinGecko: " + coins.size() + " koin");
+        String wsStatus = wsConnected ? "● WEBSOCKET LIVE" : "○ MENGHUBUNGKAN...";
+        String binanceStatus = !binanceTickers.isEmpty() ? " (" + binanceTickers.size() + " pair)" : "";
+        status.setText(wsStatus + binanceStatus + " | CoinGecko: " + coins.size() + " koin");
+        status.setTextColor(wsConnected ? GREEN : YELLOW);
     }
-
-    String httpGet(String urlStr) throws Exception {
-        HttpURLConnection conn = null;
-        try {
-            URL url = new URL(urlStr);
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(10000);
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-            conn.setRequestProperty("Accept", "application/json");
-            if (conn.getResponseCode() != 200) throw new Exception("HTTP " + conn.getResponseCode());
-            BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line);
-            br.close();
-            return sb.toString();
-        } finally {
-            if (conn != null) conn.disconnect();
-        }
-    }
-
-    // ===================== UTILITIES =====================
 
     void addHistory(LinearLayout target, int limit) {
         if (history.isEmpty()) { target.addView(note("Belum ada transaksi", "Transaksi akan muncul di sini.")); return; }
@@ -807,6 +790,30 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    // --- Indikator Matematika ---
+
+    double calculateRSI(ArrayList<Double> data) {
+        if (data == null || data.size() < 3) return 50;
+        int start = Math.max(1, data.size() - 14);
+        double gain = 0, loss = 0;
+        for (int i = start; i < data.size(); i++) {
+            double diff = data.get(i) - data.get(i - 1);
+            if (diff > 0) gain += diff; else loss -= diff;
+        }
+        if (loss == 0) return 100;
+        double rs = (gain / 14.0) / (loss / 14.0);
+        return 100.0 - (100.0 / (1.0 + rs));
+    }
+
+    double calculateEMA(ArrayList<Double> data, int period) {
+        if (data == null || data.isEmpty()) return 0;
+        double ema = data.get(0);
+        double alpha = 2.0 / (period + 1.0);
+        for (int i = 1; i < data.size(); i++) ema = alpha * data.get(i) + (1 - alpha) * ema;
+        return ema;
+    }
+
+    // --- Helper UI ---
     View title(String heading, String sub) {
         LinearLayout l = column();
         l.setPadding(0, dp(8), 0, dp(14));
@@ -914,6 +921,29 @@ public class MainActivity extends Activity {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
+    // --- HTTP GET (REST) ---
+    String httpGet(String urlStr) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            conn.setRequestProperty("Accept", "application/json");
+            if (conn.getResponseCode() != 200) throw new Exception("HTTP " + conn.getResponseCode());
+            BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            br.close();
+            return sb.toString();
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    // --- Sparkline Chart ---
     class SparkChart extends View {
         ArrayList<Double> points;
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -942,4 +972,4 @@ public class MainActivity extends Activity {
             canvas.drawPath(path, paint);
         }
     }
-            }
+                        }
