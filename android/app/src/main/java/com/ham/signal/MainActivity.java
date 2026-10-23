@@ -239,7 +239,7 @@ public class MainActivity extends Activity {
     }
 
     String callGeminiAPI(String prompt) throws Exception {
-        String urlStr = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+        String urlStr = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
         
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
