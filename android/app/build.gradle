@@ -28,6 +28,5 @@ android {
 }
 
 dependencies {
-    // Cukup satu baris saja untuk OkHttp (WebSocket)
-    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    // Kosongkan dependencies. Kita murni pakai Android SDK bawaan.
 }
