@@ -28,5 +28,5 @@ android {
 }
 
 dependencies {
-    // Kosongkan dependencies. Kita murni pakai Android SDK bawaan.
+    // Kosongkan. Jangan tambahkan apa pun di sini.
 }
