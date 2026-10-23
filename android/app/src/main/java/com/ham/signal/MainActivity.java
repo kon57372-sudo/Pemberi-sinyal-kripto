@@ -31,7 +31,7 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     
-    // Variabel untuk menyimpan API Key Agnes
+    // Variabel untuk menyimpan API Key Groq
     private String apiKey = ""; 
 
     @Override
@@ -39,7 +39,8 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         
         prefs = getSharedPreferences("ai_studio_prefs", Context.MODE_PRIVATE);
-        apiKey = prefs.getString("agnes_api_key", "");
+        // Key preference untuk GROQ
+        apiKey = prefs.getString("groq_api_key", "");
         
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xFF0B0F17); 
@@ -57,7 +58,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subTitle = new TextView(this);
-        subTitle.setText("Direct AI Engine (Agnes AI Edition)");
+        subTitle.setText("Direct AI Engine (Groq API)");
         subTitle.setTextColor(0xFF91A0B5);
         subTitle.setTextSize(14);
         subTitle.setGravity(Gravity.CENTER);
@@ -76,7 +77,7 @@ public class MainActivity extends Activity {
         addFeatureButton("2. Character Studio (Teks Prompt)", this::showCharacterDialog);
         
         addSection("PENGATURAN API");
-        addFeatureButton("3. Set API Key Agnes AI", this::showApiKeyDialog);
+        addFeatureButton("3. Set API Key Groq", this::showApiKeyDialog);
         addFeatureButton("4. Tes Koneksi AI", this::testConnection);
 
         scroll.addView(root);
@@ -111,10 +112,10 @@ public class MainActivity extends Activity {
 
     void showApiKeyDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Masukkan API Key Agnes AI");
+        builder.setTitle("Masukkan API Key Groq");
 
         EditText input = new EditText(this);
-        input.setHint("Contoh: ag-xxxxxxxxxxxx");
+        input.setHint("Contoh: gsk_xxxxxxxxxxxx");
         input.setText(apiKey); 
         builder.setView(input);
 
@@ -122,10 +123,10 @@ public class MainActivity extends Activity {
             String key = input.getText().toString().trim();
             if(!key.isEmpty()) {
                 apiKey = key;
-                prefs.edit().putString("agnes_api_key", key).apply();
+                prefs.edit().putString("groq_api_key", key).apply();
                 statusText.setText("Status: Siap Produksi");
                 statusText.setTextColor(0xFF16C784);
-                toast("API Key Disimpan!");
+                toast("API Key Groq Disimpan!");
             } else {
                 toast("API Key kosong.");
             }
@@ -150,14 +151,13 @@ public class MainActivity extends Activity {
         builder.setPositiveButton("Generate", (dialog, which) -> {
             String prompt = input.getText().toString();
             if(prompt.isEmpty()) return;
-            statusText.setText("Menghubungi AI Agnes...");
+            statusText.setText("Menghubungi AI Groq...");
             statusText.setTextColor(0xFFFFC857);
             
             new Thread(() -> {
                 try {
                     String fullPrompt = "Buatkan sinopsis cerita donghua xianxia berdasarkan ide berikut: " + prompt + ". Buatkan 3 paragraf epik.";
-                    // Menggunakan fungsi Text API
-                    String story = callAgnesTextAPI(fullPrompt);
+                    String story = callGroqAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Cerita Berhasil Dibuat!");
                         statusText.setTextColor(0xFF16C784);
@@ -197,11 +197,11 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 try {
                     String fullPrompt = "Buatkan prompt visual bahasa Inggris yang sangat detail untuk AI image generator karakter donghua 3D: " + prompt;
-                    String result = callAgnesTextAPI(fullPrompt);
+                    String result = callGroqAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Desain Selesai!");
                         statusText.setTextColor(0xFF16C784);
-                        showResultDialog("Prompt Desain (Gunakan di menu Image-to-Video)", result);
+                        showResultDialog("Prompt Desain", result);
                     });
                 } catch (Exception e) {
                     handler.post(() -> {
@@ -225,7 +225,7 @@ public class MainActivity extends Activity {
         statusText.setText("Mengetes koneksi...");
         new Thread(() -> {
             try {
-                String res = callAgnesTextAPI("Halo, balas satu kata: SUKSES");
+                String res = callGroqAPI("Halo, balas satu kata: SUKSES");
                 handler.post(() -> {
                     statusText.setText("Koneksi Berhasil!");
                     statusText.setTextColor(0xFF16C784);
@@ -241,9 +241,12 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    // --- FUNGSI API AGNES (TEXT) ---
-    String callAgnesTextAPI(String prompt) throws Exception {
-        String urlStr = "https://apihub.agnes-ai.com/v1/chat/completions";
+    // ==========================================
+    // INI FUNGSI GROQ ASLI (BUKAN DEEPSEEK)
+    // ==========================================
+    String callGroqAPI(String prompt) throws Exception {
+        // URL RESMI GROQ
+        String urlStr = "https://api.groq.com/openai/v1/chat/completions";
         
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -253,15 +256,15 @@ public class MainActivity extends Activity {
         conn.setDoOutput(true);
 
         JSONObject jsonBody = new JSONObject();
-        // Model gratis Agnes untuk teks
-        jsonBody.put("model", "agnes-2.0-flash"); 
+        // MODEL RESMI GROQ (Llama 3.3)
+        jsonBody.put("model", "llama-3.3-70b-versatile"); 
         jsonBody.put("stream", false);
 
         JSONArray messages = new JSONArray();
         
         JSONObject systemMsg = new JSONObject();
         systemMsg.put("role", "system");
-        systemMsg.put("content", "Anda adalah asisten AI kreator naskah donghua profesional. Jawab dengan bahasa Indonesia yang baik dan detail.");
+        systemMsg.put("content", "Anda adalah asisten AI kreator naskah donghua profesional.");
         messages.put(systemMsg);
 
         JSONObject userMsg = new JSONObject();
@@ -294,7 +297,6 @@ public class MainActivity extends Activity {
             response.append(responseLine.trim());
         }
         
-        // Parsing JSON Respon Agnes (Format OpenAI)
         JSONObject jsonObject = new JSONObject(response.toString());
         JSONArray choices = jsonObject.getJSONArray("choices");
         JSONObject message = choices.getJSONObject(0).getJSONObject("message");
@@ -312,4 +314,4 @@ public class MainActivity extends Activity {
     void toast(String msg) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
-}
+                            }
