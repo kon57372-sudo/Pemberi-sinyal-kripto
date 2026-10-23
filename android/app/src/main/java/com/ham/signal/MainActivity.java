@@ -31,7 +31,7 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     
-    // Mengganti nama variabel agar lebih umum
+    // Variabel untuk menyimpan API Key Agnes
     private String apiKey = ""; 
 
     @Override
@@ -39,8 +39,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         
         prefs = getSharedPreferences("ai_studio_prefs", Context.MODE_PRIVATE);
-        // Menggunakan key preference baru untuk DeepSeek
-        apiKey = prefs.getString("deepseek_api_key", "");
+        apiKey = prefs.getString("agnes_api_key", "");
         
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xFF0B0F17); 
@@ -58,7 +57,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subTitle = new TextView(this);
-        subTitle.setText("Direct AI Engine (DeepSeek Edition)");
+        subTitle.setText("Direct AI Engine (Agnes AI Edition)");
         subTitle.setTextColor(0xFF91A0B5);
         subTitle.setTextSize(14);
         subTitle.setGravity(Gravity.CENTER);
@@ -73,11 +72,11 @@ public class MainActivity extends Activity {
         root.addView(statusText);
 
         addSection("FASE 1: PRA-PRODUKSI");
-        addFeatureButton("1. AI Story Generator", this::showStoryDialog);
-        addFeatureButton("2. Character Studio", this::showCharacterDialog);
+        addFeatureButton("1. AI Story Generator (Teks)", this::showStoryDialog);
+        addFeatureButton("2. Character Studio (Teks Prompt)", this::showCharacterDialog);
         
         addSection("PENGATURAN API");
-        addFeatureButton("3. Set API Key DeepSeek", this::showApiKeyDialog);
+        addFeatureButton("3. Set API Key Agnes AI", this::showApiKeyDialog);
         addFeatureButton("4. Tes Koneksi AI", this::testConnection);
 
         scroll.addView(root);
@@ -112,10 +111,10 @@ public class MainActivity extends Activity {
 
     void showApiKeyDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Masukkan DeepSeek API Key");
+        builder.setTitle("Masukkan API Key Agnes AI");
 
         EditText input = new EditText(this);
-        input.setHint("Contoh: sk-xxxxxxxxxxxx");
+        input.setHint("Contoh: ag-xxxxxxxxxxxx");
         input.setText(apiKey); 
         builder.setView(input);
 
@@ -123,7 +122,7 @@ public class MainActivity extends Activity {
             String key = input.getText().toString().trim();
             if(!key.isEmpty()) {
                 apiKey = key;
-                prefs.edit().putString("deepseek_api_key", key).apply();
+                prefs.edit().putString("agnes_api_key", key).apply();
                 statusText.setText("Status: Siap Produksi");
                 statusText.setTextColor(0xFF16C784);
                 toast("API Key Disimpan!");
@@ -142,7 +141,7 @@ public class MainActivity extends Activity {
         }
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Buat Ide Cerita Cultivation");
+        builder.setTitle("Buat Ide Cerita Donghua");
 
         EditText input = new EditText(this);
         input.setHint("Contoh: Pemuda desa menemukan cincin kuno...");
@@ -151,13 +150,14 @@ public class MainActivity extends Activity {
         builder.setPositiveButton("Generate", (dialog, which) -> {
             String prompt = input.getText().toString();
             if(prompt.isEmpty()) return;
-            statusText.setText("Menghubungi AI DeepSeek...");
+            statusText.setText("Menghubungi AI Agnes...");
             statusText.setTextColor(0xFFFFC857);
             
             new Thread(() -> {
                 try {
                     String fullPrompt = "Buatkan sinopsis cerita donghua xianxia berdasarkan ide berikut: " + prompt + ". Buatkan 3 paragraf epik.";
-                    String story = callDeepSeekAPI(fullPrompt);
+                    // Menggunakan fungsi Text API
+                    String story = callAgnesTextAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Cerita Berhasil Dibuat!");
                         statusText.setTextColor(0xFF16C784);
@@ -196,12 +196,12 @@ public class MainActivity extends Activity {
             
             new Thread(() -> {
                 try {
-                    String fullPrompt = "Buatkan prompt visual detail untuk AI image generator karakter donghua 3D: " + prompt;
-                    String result = callDeepSeekAPI(fullPrompt);
+                    String fullPrompt = "Buatkan prompt visual bahasa Inggris yang sangat detail untuk AI image generator karakter donghua 3D: " + prompt;
+                    String result = callAgnesTextAPI(fullPrompt);
                     handler.post(() -> {
                         statusText.setText("Desain Selesai!");
                         statusText.setTextColor(0xFF16C784);
-                        showResultDialog("Prompt Desain", result);
+                        showResultDialog("Prompt Desain (Gunakan di menu Image-to-Video)", result);
                     });
                 } catch (Exception e) {
                     handler.post(() -> {
@@ -225,7 +225,7 @@ public class MainActivity extends Activity {
         statusText.setText("Mengetes koneksi...");
         new Thread(() -> {
             try {
-                String res = callDeepSeekAPI("Halo, balas satu kata: SUKSES");
+                String res = callAgnesTextAPI("Halo, balas satu kata: SUKSES");
                 handler.post(() -> {
                     statusText.setText("Koneksi Berhasil!");
                     statusText.setTextColor(0xFF16C784);
@@ -241,32 +241,29 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    // --- FUNGSI UTAMA YANG DIUBAH UNTUK DEEPSEEK ---
-    String callDeepSeekAPI(String prompt) throws Exception {
-        String urlStr = "https://api.deepseek.com/chat/completions";
+    // --- FUNGSI API AGNES (TEXT) ---
+    String callAgnesTextAPI(String prompt) throws Exception {
+        String urlStr = "https://apihub.agnes-ai.com/v1/chat/completions";
         
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
-        // DeepSeek menggunakan format Bearer Token
         conn.setRequestProperty("Authorization", "Bearer " + apiKey); 
         conn.setDoOutput(true);
 
-        // Menyusun JSON Request menggunakan JSONObject agar lebih aman
         JSONObject jsonBody = new JSONObject();
-        jsonBody.put("model", "deepseek-chat");
+        // Model gratis Agnes untuk teks
+        jsonBody.put("model", "agnes-2.0-flash"); 
         jsonBody.put("stream", false);
 
         JSONArray messages = new JSONArray();
         
-        // System Prompt: Memberi tahu AI siapa dia
         JSONObject systemMsg = new JSONObject();
         systemMsg.put("role", "system");
         systemMsg.put("content", "Anda adalah asisten AI kreator naskah donghua profesional. Jawab dengan bahasa Indonesia yang baik dan detail.");
         messages.put(systemMsg);
 
-        // User Prompt: Input dari pengguna
         JSONObject userMsg = new JSONObject();
         userMsg.put("role", "user");
         userMsg.put("content", prompt);
@@ -274,7 +271,6 @@ public class MainActivity extends Activity {
 
         jsonBody.put("messages", messages);
 
-        // Kirim Request
         try (OutputStream os = conn.getOutputStream()) {
             byte[] input = jsonBody.toString().getBytes("utf-8");
             os.write(input, 0, input.length);
@@ -291,7 +287,6 @@ public class MainActivity extends Activity {
             throw new Exception("HTTP " + responseCode + " : " + errorResponse.toString());
         }
 
-        // Baca Response
         BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"));
         StringBuilder response = new StringBuilder();
         String responseLine;
@@ -299,7 +294,7 @@ public class MainActivity extends Activity {
             response.append(responseLine.trim());
         }
         
-        // Parsing JSON dari DeepSeek (Format OpenAI)
+        // Parsing JSON Respon Agnes (Format OpenAI)
         JSONObject jsonObject = new JSONObject(response.toString());
         JSONArray choices = jsonObject.getJSONArray("choices");
         JSONObject message = choices.getJSONObject(0).getJSONObject("message");
